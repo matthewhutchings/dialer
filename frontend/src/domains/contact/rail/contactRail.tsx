@@ -11,6 +11,7 @@ import { timeAgo } from "@/domains/admin/data";
 import type { Contact } from "@/domains/contact/model";
 import { RecordHistory } from "@/domains/contact/history";
 import { useExperimental } from "@/domains/app/experimental";
+import { LinkedNotes } from "@/domains/contact/notes";
 
 export type RailTab = "summary" | "activity" | "script" | "notes" | "website";
 
@@ -79,7 +80,10 @@ export function RailPanel({
           ) : (
             <Empty text="This contact is not in a campaign, so there is no call script." />
           ))}
-        {tab === "notes" && <NotesPanel key={contact.id} notes={contact.notes ?? ""} onSave={onSaveNotes} />}
+        {tab === "notes" && <>
+          <div className="p-3"><LinkedNotes contact={contact} /></div>
+          <NotesPanel key={contact.id} notes={contact.notes ?? ""} onSave={onSaveNotes} />
+        </>}
         {tab === "website" && contact.type === "prospect" && websitePreview && (
           <WebsitePanel prospectId={contact.id} prospectPhone={contact.phone} prospectCountry={contact.country} />
         )}

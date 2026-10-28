@@ -87,6 +87,14 @@ export interface PersonInput {
   linkedin?: string;
 }
 
+export interface LinkedContactNote {
+  id: string;
+  title: string;
+  body: string;
+  at: string | null;
+  author: string | null;
+}
+
 export interface CallCampaign {
   id: string;
   name: string;
@@ -130,6 +138,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  notes: {
+    create: (contactType: "prospect" | "lead", contactId: string, body: string) =>
+      request<LinkedContactNote>("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactType, contactId, body }),
+      }),
+    list: (contactType: "prospect" | "lead", contactId: string) =>
+      request<LinkedContactNote[]>(`/api/notes?${new URLSearchParams({ contactType, contactId })}`),
+  },
   auth: {
     signup: (email: string, password: string, fullName: string) =>
       request<{ user: any; token: string }>("/api/auth/signup", {

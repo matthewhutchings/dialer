@@ -36,13 +36,23 @@ export function isUnknownWebsite(value: unknown): boolean {
 /** Written when a NOT NULL text column has no real value. */
 export const UNKNOWN_TEXT = "unknown";
 
-/** The five industry routing values the `label` SELECT accepts. */
+/** The industry routing values the `label` SELECT accepts. */
 export const PROSPECT_LABELS = [
   "AUTO_PAINT_AND_BODY_SHOPS",
   "WINDOW_TINTING",
   "AUTO_DETAILING",
   "GENERAL_TRADES",
   "NURSERY_SCHOOL",
+  "SURVEYING",
+  "MARKETING_AND_CREATIVE",
+  "BUSINESS_CONSULTING",
+  "CONSTRUCTION_AND_ROOFING",
+  "ACCOUNTING_AND_FINANCE",
+  "ENGINEERING_AND_ENVIRONMENTAL",
+  "TECH_AND_IT",
+  "RECRUITMENT_AND_HR",
+  "PROPERTY_AND_FACILITIES",
+  "OTHER",
 ] as const;
 
 export type ProspectLabel = (typeof PROSPECT_LABELS)[number];

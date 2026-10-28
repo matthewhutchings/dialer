@@ -154,7 +154,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex flex-col h-screen overflow-hidden bg-[var(--ods-bg-primary,#ffffff)] text-[var(--ods-text-primary,#18181b)] font-sans antialiased">
         <div className="flex items-center justify-between h-8 px-3 border-b border-[var(--ods-border,#e5e5ea)] text-[12px] text-[var(--ods-text-secondary,#575757)]">
-          <span className="font-medium truncate">{currentNav?.label ?? 'Cold Dialer'}</span>
+          <span className="font-medium truncate">{currentNav?.label ?? 'Fewzen Dialer'}</span>
           <a
             href={location.pathname + location.search.replace(/[?&]embed=1/, '').replace(/[?&]framed=1/, '')}
             target="_blank"
@@ -191,7 +191,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <div className="w-6 h-6 rounded-md bg-[var(--ods-brand-600)] flex items-center justify-center flex-shrink-0">
                 <Phone className="w-3.5 h-3.5 text-white" />
               </div>
-              <span className="text-[14px] font-semibold tracking-tight truncate text-[var(--ods-text-primary)]">Cold Dialer</span>
+              <span className="text-[14px] font-semibold tracking-tight truncate text-[var(--ods-text-primary)]">Fewzen Dialer</span>
             </div>
           )}
           <button

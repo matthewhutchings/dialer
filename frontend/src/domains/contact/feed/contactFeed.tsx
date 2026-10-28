@@ -1,3 +1,4 @@
+import { Markdown } from "@/domains/ui/markdown";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/domains/ui/button";
 import { Link } from "react-router-dom";
@@ -27,7 +28,7 @@ import { formatDuration } from "@/domains/dialer/dock";
 import { usePersistedState } from "@/domains/app/persistedState";
 import { api } from "@/domains/api/client";
 import { countSms } from "@/domains/messaging/smsCount";
-import { parseNotes } from "@/domains/contact/notes";
+import { parseNotes, useLinkedNotes } from "@/domains/contact/notes";
 import { countryCode } from "@/domains/country/lookup";
 import { dispositionTypeOfStatus } from "@/domains/calls/disposition";
 import type { HistoryRow } from "@/domains/activity/historyFormat";
@@ -87,12 +88,14 @@ export function ContactFeed({
 
   const { rows: history, isLoading: historyLoading, error: historyError } = useRecordHistory(contact);
   const { data: thread, isLoading: textsLoading, error: textsError } = useContactTexts(contact);
+  const linkedNotes = useLinkedNotes(contact);
 
   const items = useMemo<FeedItem[]>(() => {
     const out: FeedItem[] = [];
     for (const call of calls) out.push({ kind: "call", at: call.startedAt || call.created_at, call });
     for (const text of thread?.messages ?? []) out.push({ kind: "text", at: text.at, text });
     for (const n of parseNotes(contact.notes)) out.push({ kind: "note", at: n.at, author: n.author, body: n.body });
+    for (const n of linkedNotes.data ?? []) out.push({ kind: "note", at: n.at, author: n.author, body: `**${n.title}**\n\n${n.body}` });
     // Record changes, the same rows as Record history. Added notes already
     // show as note cards, so their history rows are left out here.
     for (const row of history) if (row.kind !== "note") out.push({ kind: "event", at: row.at, row });
@@ -105,7 +108,7 @@ export function ContactFeed({
     }
     // Oldest first, like a chat: undated (older free-form) notes lead.
     return out.sort((a, b) => (a.at ? new Date(a.at).getTime() : 0) - (b.at ? new Date(b.at).getTime() : 0));
-  }, [calls, contact, history, thread]);
+  }, [calls, contact, history, thread, linkedNotes.data]);
 
   const shown = items.filter((i) => filter === "all" || (filter === "calls" && i.kind === "call") || (filter === "texts" && i.kind === "text") || (filter === "notes" && i.kind === "note") || (filter === "updates" && i.kind === "event"));
   // Texts and history arrive after the record: while either is on its first
@@ -191,6 +194,8 @@ export function ContactFeed({
         </div>
       )}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3 bg-[var(--ods-bg-secondary)]">
+        {linkedNotes.isLoading && <p role="status" className="text-[13px]">Loading linked notes...</p>}
+        {linkedNotes.error && <p role="alert" className="text-[13px] text-red-600">Linked notes could not be loaded: {linkedNotes.error.message}</p>}
         {bodyState === "loading" && (
           <div className="space-y-3" aria-label="Loading activity">
             <Skeleton className="h-14 rounded-[12px]" />
@@ -332,7 +337,7 @@ function NoteItem({ at, author, body }: { at: string | null; author: string | nu
         {author && <span>· {author}</span>}
         {at && <span className="ml-auto">{time(at)}</span>}
       </div>
-      <p className="text-[14px] whitespace-pre-wrap break-words">{body}</p>
+      <Markdown className="text-[14px]">{body}</Markdown>
     </div>
   );
 }

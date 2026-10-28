@@ -27,6 +27,7 @@ export interface SchemaField {
   description?: string;
   icon?: string;
   isNullable?: boolean;
+  isUnique?: boolean;
   /** Twenty's JSON default, e.g. "'VALUE'" for a SELECT (quotes included). */
   defaultValue?: unknown;
   settings?: Record<string, unknown>;

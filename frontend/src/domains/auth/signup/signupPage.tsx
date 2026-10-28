@@ -11,7 +11,7 @@ export function SignupPage() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-brand-50 to-brand-100 px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-brand-900">Cold Dialer</h1>
+          <h1 className="text-3xl font-bold text-brand-900">Fewzen Dialer</h1>
           <p className="text-brand-600 mt-2">Member access</p>
         </div>
         <div className="bg-white rounded-[12px] shadow-lg p-8 space-y-5">

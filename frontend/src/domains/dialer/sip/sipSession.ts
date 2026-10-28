@@ -45,6 +45,8 @@ export async function startAgent(handlers: {
   const domain = getSipDomain();
   const ua = new UserAgent({
     uri: UserAgent.makeURI(cfg.uri),
+    // Telnyx addresses inbound INVITEs to the DID, not the SIP login.
+    contactName: cfg.callerId.replace(/^\+/, "") || getSipExtension(),
     displayName: cfg.callerId || undefined,
     transportOptions: { server: cfg.wsUrl || `wss://${domain}:5066` },
     authorizationUsername: getSipExtension(),

@@ -37,6 +37,9 @@ VITE_SIP_CALLER_ID=+1XXXXXXXXXX
 - Free trial includes $10 credit
 - Requires paid plan to buy numbers
 - Excellent call quality
+- The browser registers its Contact user as the caller ID without the leading
+  `+`, matching Telnyx inbound INVITEs addressed to that number. Keep the
+  configured caller ID aligned with the number routed to this browser.
 
 ## Twilio
 

@@ -38,6 +38,7 @@ import { Chip } from "@/domains/ui/chip";
 import { SelectMenu } from "@/domains/ui/menu";
 import { TabBar } from "@/domains/ui/tabBar";
 import { MusicTab, NowPlaying } from "@/domains/music/dock";
+import { clearQueue, removeFromQueue, useDialQueue } from "@/domains/dialer/queue";
 import { useExperimental } from "@/domains/app/experimental";
 import { CountryFlag } from "@/domains/country/badge";
 import { DispositionBadge, DispositionIcon } from "@/domains/calls/disposition";
@@ -396,15 +397,17 @@ function IncomingBanner() {
 
 // ---------------------------------------------------------------- idle
 
-type IdleTab = "recents" | "contacts" | "keypad" | "music";
+type IdleTab = "recents" | "contacts" | "queue" | "keypad" | "music";
 
 function IdleView() {
   const [tab, setTab] = usePersistedState<IdleTab>("dialer-tab", "recents");
   // The music player is experimental (Settings > Experimental).
   const [music] = useExperimental("musicPlayer");
+  const queued = useDialQueue().length;
   const tabs = [
     { key: "recents" as const, label: "Recents", icon: Clock },
     { key: "contacts" as const, label: "Contacts", icon: Users },
+    { key: "queue" as const, label: queued ? `Queue (${queued.toLocaleString()})` : "Queue", icon: ListFilter },
     { key: "keypad" as const, label: "Keypad", icon: Keyboard },
     ...(music ? [{ key: "music" as const, label: "Music", icon: Music }] : []),
   ];
@@ -415,6 +418,7 @@ function IdleView() {
       <div className="flex-1 min-h-0 overflow-y-auto">
         {shown === "recents" && <RecentsTab />}
         {shown === "contacts" && <ContactsTab />}
+        {shown === "queue" && <QueueTab />}
         {shown === "keypad" && <KeypadTab />}
         {shown === "music" && <MusicTab />}
       </div>
@@ -962,6 +966,77 @@ function Keypad({ onKey }: { onKey: (k: string) => void }) {
   );
 }
 
+/** Contacts added from the Contacts page, called top to bottom with auto-queue. */
+function QueueTab() {
+  const ids = useDialQueue();
+  const { dialFromList, setOn, on } = useContext(AutoQueueContext);
+  const { state } = useDialer();
+  const navigate = useNavigate();
+  const { data, isFetching, error } = useQuery({
+    queryKey: ["dialer-queue-rows", ids],
+    queryFn: async () => {
+      const found = new Map<string, ContactRow>();
+      for (let i = 0; i < ids.length; i += 100) {
+        for (const r of await contactsApi.lookup(ids.slice(i, i + 100))) found.set(r.id, r);
+      }
+      return ids.map((id) => found.get(id)).filter((r): r is ContactRow => !!r);
+    },
+    enabled: ids.length > 0,
+    staleTime: 60_000,
+  });
+  const rows = data ?? [];
+  const callable = rows.filter((r) => rowTarget(r).phone);
+  const start = (list: ContactRow[], index: number) => {
+    setOn(true);
+    dialFromList(list, index);
+  };
+  if (ids.length === 0) {
+    return <p className="p-6 text-center text-[13px] text-[var(--ods-text-tertiary)]">No contacts queued. On the Contacts page, select contacts and choose Add to dialer.</p>;
+  }
+  return (
+    <div>
+      <div className="p-3 sticky top-0 z-[1] bg-[var(--ods-bg-primary)] space-y-2 border-b border-[var(--ods-border)]">
+        <div className="text-[13px] text-[var(--ods-text-secondary)]">
+          {ids.length.toLocaleString()} queued{isFetching ? "" : ` · ${callable.length.toLocaleString()} with a number`}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" disabled={!callable.length || state !== "idle"} onClick={() => start(callable, 0)}>
+            <Play className="w-3.5 h-3.5" /> Start calling
+          </Button>
+          <Button size="sm" variant="ghost" onClick={clearQueue}>
+            <Trash2 className="w-3.5 h-3.5" /> Clear
+          </Button>
+          {on && <span className="text-[12px] text-[var(--ods-text-tertiary)]">Auto-queue on</span>}
+        </div>
+      </div>
+      {error && <p role="alert" className="p-3 text-[13px] text-red-600">Queue could not be loaded.</p>}
+      {rows.map((r) => {
+        const index = callable.indexOf(r);
+        return (
+          <ListRow
+            key={r.id}
+            icon={Phone}
+            iconClass={r.phone ? "text-emerald-600" : "text-[var(--ods-text-tertiary)]"}
+            title={contactName(r) ?? "Unknown"}
+            meta={[r.phone || "No number", r.company].filter(Boolean).join(" · ")}
+            onClick={() => index >= 0 && start(callable, index)}
+            trailing={
+              <span className="flex items-center gap-1.5 shrink-0">
+                <button onClick={() => navigate(r.type === "lead" ? `/leads/${r.id}` : `/contacts/${r.id}`)} title="Open contact" aria-label="Open contact" className={`${BTN_ICON} opacity-0 group-hover:opacity-100 focus:opacity-100`}>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => removeFromQueue(r.id)} title="Remove from queue" aria-label="Remove from queue" className={`${BTN_ICON} opacity-0 group-hover:opacity-100 focus:opacity-100`}>
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </span>
+            }
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 function KeypadTab() {
   const { dial } = useDialer();
   const [number, setNumber] = useState("");
@@ -1005,10 +1080,24 @@ function Avatar({ name }: { name: string }) {
 function CallHeader() {
   const { target, state, duration, direction } = useDialer();
   const name = target?.name || target?.phone || "Unknown";
+  const navigate = useNavigate();
+  const profile = target?.contactType && target.contactId ? (target.contactType === "lead" ? `/leads/${target.contactId}` : `/contacts/${target.contactId}`) : null;
   return (
     <div className="px-4 pt-4 pb-3 flex flex-col items-center text-center gap-1.5">
-      <Avatar name={name} />
-      <div className="text-[15px] font-semibold truncate max-w-full">{name}</div>
+      {profile ? (
+        <button onClick={() => navigate(profile)} title="Open contact profile" aria-label={`Open ${name}'s profile`} className="rounded-md focus:outline-none focus-visible:ring-2 ring-[var(--ods-brand-600)]">
+          <Avatar name={name} />
+        </button>
+      ) : (
+        <Avatar name={name} />
+      )}
+      {profile ? (
+        <button onClick={() => navigate(profile)} title="Open contact profile" className="text-[15px] font-semibold truncate max-w-full hover:underline hover:text-[var(--ods-brand-600)]">
+          {name}
+        </button>
+      ) : (
+        <div className="text-[15px] font-semibold truncate max-w-full">{name}</div>
+      )}
       {target?.phone && name !== target.phone && <div className="text-[13px] tabular-nums text-[var(--ods-text-secondary)]">{target.phone}</div>}
       <div className="flex items-center gap-2">
         <Chip dot={STATE_DOT[state]}>{direction === "inbound" && state !== "ended" ? `Inbound · ${STATE_LABEL[state]}` : STATE_LABEL[state]}</Chip>
@@ -1083,7 +1172,7 @@ function InCallView({ scriptOpen, onToggleScript }: { scriptOpen: boolean; onTog
         />
         <ControlButton icon={Keyboard} label="Keypad" active={panel === "keypad"} disabled={d.phoneAudio} onClick={() => setPanel((p) => (p === "keypad" ? "none" : "keypad"))} />
         <ControlButton icon={FileText} label="Notes" active={panel === "notes"} onClick={() => setPanel((p) => (p === "notes" ? "none" : "notes"))} />
-        <ControlButton icon={BookOpen} label="Script" active={scriptOpen} disabled={!d.target?.campaignId} title={d.target?.campaignId ? "Show the call script" : "No campaign script for this contact"} onClick={onToggleScript} />
+        <ControlButton icon={BookOpen} label="Script" active={scriptOpen} title="Show the call script" onClick={onToggleScript} />
         <ControlButton
           icon={User}
           label="Contact"
@@ -1163,7 +1252,7 @@ function LinesView() {
 }
 
 function NotesField() {
-  const { notes, setNotes, notesSaved, notesError, retryNotes } = useDialer();
+  const { notes, setNotes, notesSaved, notesError, retryNotes, target } = useDialer();
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -1193,6 +1282,9 @@ function NotesField() {
         placeholder="What was said, next steps…"
         className="w-full resize-none rounded-[8px] border border-[var(--ods-border)] bg-[var(--ods-bg-primary)] px-3 py-2 text-[14px] outline-none focus:border-[var(--ods-brand-500)]"
       />
+      {target?.contactType && target.contactId && (
+        <div className="mt-3"><LinkedNotes contact={{ type: target.contactType, id: target.contactId }} /></div>
+      )}
     </div>
   );
 }
@@ -1342,3 +1434,4 @@ function ListSkeleton() {
     </div>
   );
 }
+import { LinkedNotes } from "@/domains/contact/notes";

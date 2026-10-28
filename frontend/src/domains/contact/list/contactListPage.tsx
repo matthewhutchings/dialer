@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { describeError } from "@/domains/feedback/describeError";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Mail, RefreshCw, User, Users } from "@/domains/ui/icons";
+import { BookOpen, Mail, Phone, RefreshCw, User, Users } from "@/domains/ui/icons";
+import { useDialer } from "@/domains/dialer/provider";
+import { addToQueue } from "@/domains/dialer/queue";
 import { api } from "@/domains/api/client";
 import { StatusSelect, type StatusOption } from "@/domains/ui/status";
 import { StatusFilterDropdown } from "@/domains/ui/status";
@@ -98,6 +100,7 @@ export function ProspectPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { success, error: toastError, warning: toastWarning } = useToast();
+  const dialer = useDialer();
   const table = useDataTable("prospects");
   const { columnFilters, setColumnFilter } = table;
 
@@ -474,6 +477,22 @@ export function ProspectPage() {
         selection={{
           selectAll: selectAllMatching,
           onDelete: (ids) => setBulkDelete(ids),
+          actions: (ids, clear) => (
+            <ToolbarButton
+              primary
+              onClick={() => {
+                // People are dialled as their company, so only prospects and leads are queued directly.
+                const callable = ids.filter((id) => typeOf.get(id) !== "person");
+                const added = addToQueue(callable);
+                clear();
+                dialer.open();
+                success("Added to dialer", `${added.toLocaleString()} contact${added === 1 ? "" : "s"} queued${callable.length - added ? `, ${(callable.length - added).toLocaleString()} already in the queue` : ""}${ids.length - callable.length ? `, ${ids.length - callable.length} people skipped` : ""}. Open the Queue tab and press Start calling.`);
+              }}
+            >
+              <Phone className="w-3.5 h-3.5" />
+              Add to dialer
+            </ToolbarButton>
+          ),
         }}
         emptyMessage='No contacts yet. Click "Sync" to import from Twenty.'
         filters={

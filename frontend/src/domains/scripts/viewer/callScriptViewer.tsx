@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, BookOpen, AlertTriangle } from "@/domains/ui/icons";
 import { useScripts, Script } from "@/domains/scripts/data";
+import { Markdown } from "@/domains/ui/markdown";
 
 interface CallScriptViewerProps {
   onClose: () => void;
@@ -36,7 +37,11 @@ export function CallScriptViewer({ onClose, campaignId, docked, bare }: CallScri
   // Fetch scripts and find the one for this campaign
   const { data: scripts, isLoading } = useScripts();
   
-  const script = scripts?.find((s: Script) => s.campaignId === campaignId) || null;
+  // A script with no campaign is the default for contacts that have none.
+  const script =
+    (campaignId ? scripts?.find((s: Script) => s.campaignId === campaignId) : null) ||
+    scripts?.find((s: Script) => !s.campaignId) ||
+    null;
 
   if (!script) {
     return (
@@ -82,9 +87,7 @@ export function CallScriptViewer({ onClose, campaignId, docked, bare }: CallScri
           {/* Script Content */}
           {content && (
             <div className="bg-[var(--ods-bg-secondary)] rounded-[8px] p-4 border border-[var(--ods-border)]">
-              <p className="text-[var(--ods-text-primary)] leading-relaxed whitespace-pre-wrap">
-                {content}
-              </p>
+              <Markdown className="text-[var(--ods-text-primary)] leading-relaxed">{content}</Markdown>
             </div>
           )}
           
@@ -107,7 +110,7 @@ export function CallScriptViewer({ onClose, campaignId, docked, bare }: CallScri
                     </button>
                     {activeObjection === objection && (
                       <div className="mt-2 p-3 bg-[var(--ods-brand-50)] rounded-[8px] border border-[var(--ods-brand-200)] text-[14px] text-[var(--ods-text-primary)]">
-                        {data.response}
+                        <Markdown>{data.response ?? ""}</Markdown>
                       </div>
                     )}
                   </div>

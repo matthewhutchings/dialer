@@ -1,5 +1,15 @@
 # dialer Setup Guide
 
+## Linked contact notes
+
+The contact timeline, contact Notes panel, and dialer Notes/contact panels show
+native Twenty Notes linked through Note Targets, alongside the existing contact
+notes field. Each linked note retains its title, content, author and creation
+time. Linked notes are read-only in the dialer; edit them in Twenty.
+`GET /api/notes?contactType=prospect&contactId=<uuid>` (or `contactType=lead`)
+uses the same signed-in dialer authentication as other contact endpoints.
+Use **Refresh** in the linked-notes panel to load externally added notes immediately.
+
 ## Quick start
 
 ```bash
@@ -29,6 +39,10 @@ workspace, created by `bun run twenty:schema` from
 and `dialerAudioSession`. The command only adds what is missing;
 `bun run twenty:schema:check` is the dry run.
 
+Select options use Twenty-compatible colors, including gray for Do Not Contact
+and green for Converted and inbound UTM attribution. These colors do not change
+the stored option values or calling behavior.
+
 `bun run twenty:seed` loads the demo workspace the screenshots show (24
 fictional businesses, 48 calls, scripts, numbers, dial lists). It refuses to
 write to a workspace that already has real prospects unless you pass
@@ -37,6 +51,7 @@ write to a workspace that already has real prospects unless you pass
 ## Environment Variables
 
 ### Backend (.env.local at the repo root)
+
 ```bash
 TWENTY_BASE_URL=https://twenty.example.com
 TWENTY_API_KEY=<your-key>
@@ -87,6 +102,7 @@ OPENAI_ANALYSIS_MODEL=gpt-4o-mini
 ```
 
 ### Frontend (frontend/.env.local)
+
 ```bash
 VITE_API_URL=                      # empty = same origin, proxied to :4000 in dev
 VITE_SIP_PROVIDER=telnyx
@@ -101,11 +117,11 @@ VITE_SIP_CALLER_ID=+15551234567
 The Vercel project has **Root Directory = `frontend`**. That single fact decides
 what is live:
 
-| Piece | Production | Local dev |
-|---|---|---|
-| SPA (`frontend/`) | Vercel static build | `vite` on :5173, `/api` proxied to :4000 |
-| Telnyx webhook | `frontend/api/telnyx-webhook.ts` → `/api/telnyx-webhook` | Express → `/api/webhooks/telnyx` on :4000 |
-| Everything else under `/api/*` | **not deployed** | Express on :4000 |
+| Piece                            | Production                                                    | Local dev                                    |
+| -------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| SPA (`frontend/`)              | Vercel static build                                           | `vite` on :5173, `/api` proxied to :4000 |
+| Telnyx webhook                   | `frontend/api/telnyx-webhook.ts` → `/api/telnyx-webhook` | Express → `/api/webhooks/telnyx` on :4000 |
+| Everything else under `/api/*` | **not deployed**                                        | Express on :4000                             |
 
 Consequences worth knowing before you point anything at the deployed app:
 

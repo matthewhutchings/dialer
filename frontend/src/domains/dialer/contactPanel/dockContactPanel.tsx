@@ -1,3 +1,4 @@
+import { Markdown } from "@/domains/ui/markdown";
 import { useMemo, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -10,7 +11,7 @@ import { toContact, initials, type Contact } from "@/domains/contact/model";
 import { leadDetailKey } from "@/domains/contact/data";
 import { usePeople } from "@/domains/contact/people";
 import { useContactFacets } from "@/domains/contact/list";
-import { parseNotes } from "@/domains/contact/notes";
+import { LinkedNotes, parseNotes } from "@/domains/contact/notes";
 import { useCallsForRecord } from "@/domains/calls/data";
 import { DispositionBadge } from "@/domains/calls/disposition";
 import { CountryFlag } from "@/domains/country/badge";
@@ -194,12 +195,15 @@ export function DockContactPanel({ contactType, contactId, onClose }: { contactT
             )}
           </Block>
 
+          <Block title="Research and linked notes">
+            <LinkedNotes contact={contact} />
+          </Block>
           {notes.length > 0 && (
             <Block title="Latest notes" count={notes.length}>
               {notes.map((n, i) => (
                 <div key={i} className="py-1.5">
                   <div className="text-[12px] text-[var(--ods-text-tertiary)]">{[n.author, n.at ? timeAgo(n.at) : null].filter(Boolean).join(" · ")}</div>
-                  <p className="text-[13px] text-[var(--ods-text-primary)] whitespace-pre-wrap line-clamp-4">{n.body}</p>
+                  <Markdown className="text-[13px] text-[var(--ods-text-primary)] max-h-28 overflow-hidden">{n.body}</Markdown>
                 </div>
               ))}
             </Block>
@@ -216,4 +220,3 @@ export function DockContactPanel({ contactType, contactId, onClose }: { contactT
     </div>
   );
 }
-

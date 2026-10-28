@@ -7,14 +7,12 @@ import { Activity, BarChart3, BookOpen, FileText, Globe, User } from "@/domains/
 import { TabBar } from "@/domains/ui/tabBar";
 import { useToast } from "@/domains/ui/toast";
 import { ContactWorkspaceSkeleton } from "@/domains/ui/skeleton";
-import { useAuth } from "@/domains/auth/provider";
 import { usePersistedState } from "@/domains/app/persistedState";
 import { useExperimental } from "@/domains/app/experimental";
 import { useCallsForRecord } from "@/domains/calls/data";
 import { api } from "@/domains/api/client";
 import { useUpdateContact, type ContactType } from "@/domains/contact/list";
 import { leadDetailKey } from "@/domains/contact/data";
-import { appendNote } from "@/domains/contact/notes";
 import { toContact } from "@/domains/contact/model";
 import { ContactSidebar } from "@/domains/contact/sidebar";
 import { ContactFeed, type ComposerMode } from "@/domains/contact/feed";
@@ -34,7 +32,6 @@ export function ContactPage({ type }: { type: ContactType }) {
   const id = (type === "lead" ? params.leadId : params.prospectId) ?? "";
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
   const { error: toastError, success } = useToast();
   const update = useUpdateContact(type);
 
@@ -85,10 +82,18 @@ export function ContactPage({ type }: { type: ContactType }) {
     [update, id, type, queryClient, toastError],
   );
 
-  const author = (user?.user_metadata?.full_name || user?.email || "Someone") as string;
   const addNote = useCallback(
-    (body: string) => save({ notes: appendNote(contact?.notes, body, author) }),
-    [save, contact?.notes, author],
+    async (body: string) => {
+      try {
+        await api.notes.create(type === "lead" ? "lead" : "prospect", id, body);
+        await queryClient.invalidateQueries({ queryKey: ["linked-notes", type, id] });
+        return true;
+      } catch (err) {
+        toastError("Note not saved", describeError(err).detail);
+        return false;
+      }
+    },
+    [type, id, queryClient, toastError],
   );
 
   const remove = useCallback(async () => {
