@@ -13,6 +13,7 @@ export function bridgeConfig() {
     inboundNumber: process.env.TELNYX_INBOUND_NUMBER?.trim() || "",
     fallbackPhone: process.env.TELNYX_FALLBACK_PHONE?.trim() || "",
     agentSipUri: process.env.TELNYX_AGENT_SIP_URI?.trim() || "",
+    holdAudioUrl: process.env.TELNYX_HOLD_AUDIO_URL?.trim() || "",
   };
 }
 
@@ -46,6 +47,7 @@ export const telnyxBridgeCalls = {
     from: string;
     state: BridgeState;
     linkTo?: string;
+    commandId?: string;
     record?: boolean;
     timeoutSecs?: number;
   }): Promise<string> {
@@ -56,6 +58,7 @@ export const telnyxBridgeCalls = {
       from: params.from,
       client_state: encodeState(params.state),
       timeout_secs: params.timeoutSecs ?? 30,
+      ...(params.commandId ? { command_id: params.commandId } : {}),
       ...(params.linkTo
         ? { link_to: params.linkTo, bridge_on_answer: true, park_after_unbridge: "self" }
         : {}),
@@ -68,13 +71,36 @@ export const telnyxBridgeCalls = {
 };
 
 export const telnyxIncomingCalls = {
-  answer: telnyxBridgeCalls.answer,
+  async answer(callControlId: string, state: BridgeState, commandId?: string) {
+    await telnyxClient().calls.actions.answer(callControlId, {
+      client_state: encodeState(state),
+      ...(commandId ? { command_id: commandId } : {}),
+    });
+  },
+  async playback(callControlId: string, audioUrl: string, state: BridgeState) {
+    await telnyxClient().calls.actions.startPlayback(callControlId, {
+      audio_type: "mp3",
+      audio_url: audioUrl,
+      cache_audio: true,
+      client_state: encodeState(state),
+      command_id: `inbound-hold-${state.sessionId}`,
+      loop: "infinity",
+      target_legs: "self",
+    });
+  },
+  async stopPlayback(callControlId: string, commandId?: string) {
+    await telnyxClient().calls.actions.stopPlayback(callControlId, {
+      stop: "all",
+      ...(commandId ? { command_id: commandId } : {}),
+    });
+  },
   dial: (params: {
     to: string;
     from: string;
     state: BridgeState;
     linkTo: string;
     timeoutSecs: number;
+    commandId?: string;
   }) => telnyxBridgeCalls.dial(params),
 };
 

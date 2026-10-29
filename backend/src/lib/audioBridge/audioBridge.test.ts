@@ -86,23 +86,47 @@ test("calls to other numbers are not treated as dial-in", async () => {
 test("inbound call uses mobile fallback only when no SIP agent is online", async () => {
   const sessions: AudioSession[] = [];
   const actions: unknown[][] = [];
-  const result = await handleIncomingCall(
+  const config = {
+    inboundNumber: "+441234567890",
+    fallbackPhone: "+447700900123",
+    agentSipUri: "sip:agent@example.com",
+    holdAudioUrl: "https://dialer.example.com/holding-for-guidance.mp3",
+  };
+  await handleIncomingCall(
     "call.initiated",
     { call_control_id: "in-1", direction: "incoming", to: "+441234567890" },
-    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    config,
     {
       store: { list: async () => sessions },
       calls: {
         answer: async (...args) => { actions.push(["answer", ...args]); },
+        playback: async (...args) => { actions.push(["playback", ...args]); },
+        stopPlayback: async (callId, commandId) => { actions.push(["stop playback", callId, commandId]); },
         dial: async (params) => { actions.push(["dial", params]); return "out-1"; },
       },
       now: () => NOW,
     },
   );
-  assert.match(result!, /mobile fallback/);
+  assert.deepEqual(actions.splice(0), [
+    ["answer", "in-1", { kind: "inbound", sessionId: "in-1", target: "+447700900123" }, "inbound-answer-in-1"],
+  ]);
+  const result = await handleIncomingCall("call.answered", {
+    call_control_id: "in-1",
+    client_state: encodeState({ kind: "inbound", sessionId: "in-1", target: "+447700900123" }),
+  }, config, {
+    store: { list: async () => sessions },
+    calls: {
+      answer: async () => {},
+      playback: async (...args) => { actions.push(["playback", ...args]); },
+      stopPlayback: async (callId, commandId) => { actions.push(["stop playback", callId, commandId]); },
+      dial: async (params) => { actions.push(["dial", params]); return "out-1"; },
+    },
+    now: () => NOW,
+  });
+  assert.match(result!, /playing hold audio/);
   assert.deepEqual(actions, [
-    ["answer", "in-1", { kind: "inbound" }],
-    ["dial", { to: "+447700900123", from: "+441234567890", state: { kind: "inbound_fallback", sessionId: "in-1" }, linkTo: "in-1", timeoutSecs: 45 }],
+    ["playback", "in-1", config.holdAudioUrl, { kind: "inbound", sessionId: "in-1", target: "+447700900123" }],
+    ["dial", { to: "+447700900123", from: "+441234567890", state: { kind: "inbound_fallback", sessionId: "in-1" }, linkTo: "in-1", timeoutSecs: 45, commandId: "inbound-dial-in-1" }],
   ]);
 });
 
@@ -116,23 +140,19 @@ test("inbound call rings the configured SIP destination when an agent is online"
   await handleIncomingCall(
     "call.initiated",
     { call_control_id: "in-2", direction: "incoming", to: "+441234567890" },
-    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com", holdAudioUrl: "https://dialer.example.com/holding-for-guidance.mp3" },
     {
       store: { list: async () => sessions },
       calls: {
-        answer: async () => {},
+        answer: async (_callId, state) => { dialed.push(state); },
+        playback: async () => {},
+        stopPlayback: async () => {},
         dial: async (params) => { dialed.push(params); return "out-2"; },
       },
       now: () => NOW,
     },
   );
-  assert.deepEqual(dialed, [{
-    to: "sip:agent@example.com",
-    from: "+441234567890",
-    state: { kind: "inbound_agent", sessionId: "in-2" },
-    linkTo: "in-2",
-    timeoutSecs: 45,
-  }]);
+  assert.deepEqual(dialed, [{ kind: "inbound", sessionId: "in-2", target: "sip:agent@example.com" }]);
 });
 
 test("stale SIP presence does not suppress mobile fallback", async () => {
@@ -145,17 +165,50 @@ test("stale SIP presence does not suppress mobile fallback", async () => {
   await handleIncomingCall(
     "call.initiated",
     { call_control_id: "in-3", direction: "incoming", to: "+441234567890" },
-    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com", holdAudioUrl: "https://dialer.example.com/holding-for-guidance.mp3" },
     {
       store: { list: async () => sessions },
       calls: {
-        answer: async () => {},
+        answer: async (_callId, state) => { dialed.push(JSON.stringify(state)); },
+        playback: async () => {},
+        stopPlayback: async () => {},
         dial: async (params) => { dialed.push(params.to); return "out-3"; },
       },
       now: () => NOW,
     },
   );
-  assert.deepEqual(dialed, ["+447700900123"]);
+  assert.deepEqual(dialed, [JSON.stringify({ kind: "inbound", sessionId: "in-3", target: "+447700900123" })]);
+});
+
+test("hold playback stops when the agent or fallback leg answers", async () => {
+  const { log } = fakeDeps([]);
+  const stopped: string[] = [];
+  const result = await handleIncomingCall(
+    "call.answered",
+    {
+      call_control_id: "out-1",
+      client_state: encodeState({ kind: "inbound_fallback", sessionId: "in-1" }),
+    },
+    {
+      inboundNumber: "+441234567890",
+      fallbackPhone: "+447700900123",
+      agentSipUri: "sip:agent@example.com",
+      holdAudioUrl: "https://dialer.example.com/holding-for-guidance.mp3",
+    },
+    {
+      store: { list: async () => [] },
+      calls: {
+        answer: async () => {},
+        playback: async () => {},
+        stopPlayback: async (callId, commandId) => { stopped.push(`${callId}:${commandId}`); },
+        dial: async () => "unused",
+      },
+      now: () => NOW,
+    },
+  );
+  assert.match(result!, /stopped hold audio/);
+  assert.deepEqual(stopped, ["in-1:inbound-stop-hold-in-1"]);
+  assert.deepEqual(log, []);
 });
 
 test("contact leg: ringing, answered, then ended with the cause", async () => {

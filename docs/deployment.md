@@ -103,6 +103,7 @@ See [HOSTINGER_SETUP.md](../scripts/HOSTINGER_SETUP.md)
 | TELNYX_INBOUND_NUMBER | No | Telnyx business number to route through the Call Control application |
 | TELNYX_AGENT_SIP_URI | No | SIP address to ring when an agent is registered; match `VITE_SIP_URI` |
 | TELNYX_FALLBACK_PHONE | No | E.164 mobile to bridge only when no agent SIP heartbeat is active |
+| TELNYX_HOLD_AUDIO_URL | No | Public HTTPS URL for the caller hold MP3 |
 
 ## SIP Configuration
 
@@ -129,11 +130,15 @@ only when no agent is registered:
    `TELNYX_INBOUND_NUMBER`.
 3. Set `TELNYX_AGENT_SIP_URI` to the same SIP identity as `VITE_SIP_URI`.
    Set `TELNYX_FALLBACK_PHONE` to the mobile in E.164 format.
-4. Ensure the business number is authorized as outbound caller ID in Telnyx.
+4. Deploy `frontend/public/holding-for-guidance.mp3` with the frontend and set
+   `TELNYX_HOLD_AUDIO_URL` to
+   `https://<your-dialer-domain>/holding-for-guidance.mp3`.
+5. Ensure the business number is authorized as outbound caller ID in Telnyx.
 
 The browser reports a short-lived heartbeat while its SIP registration is
 active. If one is live, Telnyx calls the SIP address; otherwise it dials the
 fallback mobile. The outbound leg uses the inbound business number as caller
-ID and bridges to the caller when the destination answers. This applies only to inbound
-calls to `TELNYX_INBOUND_NUMBER`; it does not fall back just because a
-registered agent misses the call.
+ID and bridges to the caller when the destination answers. While it rings, the
+66-second MP3 plays on repeat for the caller and stops when the destination
+answers. This applies only to inbound calls to `TELNYX_INBOUND_NUMBER`; it does
+not fall back just because a registered agent misses the call.

@@ -42,6 +42,7 @@ export interface BridgeState {
   kind: "agent" | "contact" | "dialin" | "inbound" | "inbound_agent" | "inbound_fallback";
   sessionId?: string;
   tries?: number;
+  target?: string;
 }
 
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -110,13 +111,16 @@ export interface BridgeDeps {
 export interface IncomingCallDeps {
   store: { list(): Promise<AudioSession[]> };
   calls: {
-    answer(callControlId: string, state: BridgeState): Promise<void>;
+    answer(callControlId: string, state: BridgeState, commandId?: string): Promise<void>;
+    playback(callControlId: string, audioUrl: string, state: BridgeState): Promise<void>;
+    stopPlayback(callControlId: string, commandId?: string): Promise<void>;
     dial(params: {
       to: string;
       from: string;
       state: BridgeState;
       linkTo: string;
       timeoutSecs: number;
+      commandId?: string;
     }): Promise<string>;
   };
   now(): Date;
@@ -125,15 +129,50 @@ export interface IncomingCallDeps {
 export async function handleIncomingCall(
   eventType: string,
   payload: any,
-  config: { inboundNumber: string; fallbackPhone: string; agentSipUri: string },
+  config: { inboundNumber: string; fallbackPhone: string; agentSipUri: string; holdAudioUrl: string },
   deps: IncomingCallDeps,
 ): Promise<string | null> {
   const ccid: string | undefined = payload?.call_control_id;
+  if (!ccid) return null;
+
+  const state = decodeState(payload?.client_state);
+  if (
+    eventType === "call.answered" &&
+    (state?.kind === "inbound_agent" || state?.kind === "inbound_fallback") &&
+    state.sessionId
+  ) {
+    await deps.calls.stopPlayback(state.sessionId, `inbound-stop-hold-${state.sessionId}`);
+    return `stopped hold audio for connected inbound call ${state.sessionId}`;
+  }
+
+  if (eventType === "call.answered" && state?.kind === "inbound" && state.sessionId && state.target) {
+    if (!/^https:\/\//i.test(config.holdAudioUrl)) {
+      throw new Error("TELNYX_HOLD_AUDIO_URL must be a publicly reachable HTTPS URL.");
+    }
+    if (!/^\+[1-9]\d{6,14}$/.test(config.inboundNumber)) {
+      throw new Error("TELNYX_INBOUND_NUMBER must be in E.164 format.");
+    }
+    await deps.calls.playback(ccid, config.holdAudioUrl, state);
+    const outboundCallId = await deps.calls.dial({
+      to: state.target,
+      from: config.inboundNumber,
+      state: {
+        kind: /^sips?:/i.test(state.target)
+          ? "inbound_agent"
+          : "inbound_fallback",
+        sessionId: state.sessionId,
+      },
+      linkTo: state.sessionId,
+      timeoutSecs: 45,
+      commandId: `inbound-dial-${state.sessionId}`,
+    });
+    return `incoming call ${state.sessionId} playing hold audio while destination rings (outbound ${outboundCallId})`;
+  }
+
   if (
     eventType !== "call.initiated" ||
-    !ccid ||
     payload?.direction !== "incoming" ||
-    decodeState(payload?.client_state) ||
+    state ||
     !config.inboundNumber ||
     digitsOnly(payload?.to) !== digitsOnly(config.inboundNumber)
   ) return null;
@@ -141,9 +180,6 @@ export async function handleIncomingCall(
   const now = deps.now();
   const hasOnlineAgent = (await deps.store.list()).some((session) => isSipAgentOnline(session, now));
   const to = hasOnlineAgent ? config.agentSipUri : config.fallbackPhone;
-  if (!/^\+[1-9]\d{6,14}$/.test(config.inboundNumber)) {
-    throw new Error("TELNYX_INBOUND_NUMBER must be in E.164 format.");
-  }
   if (hasOnlineAgent && !/^sips?:[^@\s]+@[^@\s]+$/i.test(to)) {
     throw new Error("TELNYX_AGENT_SIP_URI must be a SIP URI while an agent is online.");
   }
@@ -151,16 +187,15 @@ export async function handleIncomingCall(
     throw new Error("TELNYX_FALLBACK_PHONE must be in E.164 format when no agents are online.");
   }
 
-  const routeKind = hasOnlineAgent ? "inbound_agent" : "inbound_fallback";
-  await deps.calls.answer(ccid, { kind: "inbound" });
-  const outboundCallId = await deps.calls.dial({
-    to,
-    from: config.inboundNumber,
-    state: { kind: routeKind, sessionId: ccid },
-    linkTo: ccid,
-    timeoutSecs: 45,
-  });
-  return `incoming call ${ccid} bridged via ${hasOnlineAgent ? "online agent" : "mobile fallback"} (outbound ${outboundCallId})`;
+  if (!/^https:\/\//i.test(config.holdAudioUrl)) {
+    throw new Error("TELNYX_HOLD_AUDIO_URL must be a publicly reachable HTTPS URL.");
+  }
+  await deps.calls.answer(ccid, {
+    kind: "inbound",
+    sessionId: ccid,
+    target: to,
+  }, `inbound-answer-${ccid}`);
+  return `incoming call ${ccid} answered; preparing ${hasOnlineAgent ? "online agent" : "mobile fallback"} route`;
 }
 
 const PIN_PROMPT = "Welcome to the Cold Dialer. Please enter your four digit PIN.";
