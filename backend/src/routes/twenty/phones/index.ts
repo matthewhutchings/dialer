@@ -6,11 +6,30 @@ import { twentyGraphqlClient } from "../../../lib/twenty/graphql/index.js";
 import { createLogger } from "../../../lib/logger/index.js";
 import type { AgencyPhone, ClaimBody, CallStateBody, ReleaseBody } from "./types.js";
 import { mapPhone, isClaimStale, STALE_TIMEOUT_MS } from "./helpers/index.js";
+import { acquireLock, releaseLock } from "../../../lib/aiVoice/locks.js";
+import { VoiceError } from "../../../lib/aiVoice/config.js";
 
 const router = Router();
 router.use(authMiddleware);
 
 const log = createLogger('phones');
+
+// Human mutations and AI calls arbitrate the same unique reservation in Twenty.
+router.use("/:id", async (req, res, next) => {
+  if (req.method !== "POST" || process.env.AI_VOICE_ENABLED !== "true") return next();
+  try {
+    const lock = await acquireLock(`phone:${req.params.id}`);
+    res.once("finish", () => {
+      void releaseLock(lock).catch((error: unknown) => log.error("Number reservation release failed", error));
+    });
+    next();
+  } catch (error) {
+    log.error("Number reservation refused", error);
+    res.status(error instanceof VoiceError ? error.status : 502).json({
+      error: error instanceof VoiceError ? error.message : "Could not reserve this number. Check the AI voice schema.",
+    });
+  }
+});
 
 /**
  * Holder identity for claim/heartbeat/state/release. Derived server-side

@@ -10,6 +10,7 @@ import { bridgeConfig, bridgeDeps, telnyxIncomingCalls } from "../../../lib/audi
 import { readInboundSettings } from "../../../lib/audioBridge/inboundSettings.js";
 import { decodeState, digitsOnly } from "../../../lib/audioBridge/index.js";
 import { handleMessageEvent } from "../../messages/events.js";
+import { handleVoiceEvent } from "../../../lib/aiVoice/index.js";
 
 const log = createLogger('telnyx-webhook');
 
@@ -192,6 +193,10 @@ router.post(["/telnyx", "/"], async (req, res) => {
 
   try {
     let result = "ignored";
+    if (await handleVoiceEvent(eventType, payload)) {
+      res.status(200).json({ ok: true, event: eventType, result: "AI call updated" });
+      return;
+    }
     // Phone audio (Call me / Dial in) call-control events, when configured.
     const config = bridgeConfig();
     const bridged = config.appId ? await handleBridgeEvent(eventType, payload, bridgeDeps()) : null;

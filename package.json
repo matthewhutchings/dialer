@@ -53,7 +53,9 @@
     "twenty:schema": "tsx backend/src/lib/twenty/schema/cli.ts",
     "twenty:seed": "tsx backend/src/lib/demo/seed/cli.ts",
     "screenshots": "tsx scripts/screenshots/captureScreenshots.ts",
-    "twenty:schema:check": "tsx backend/src/lib/twenty/schema/cli.ts --dry-run"
+    "twenty:schema:check": "tsx backend/src/lib/twenty/schema/cli.ts --dry-run",
+    "ai:voice:setup": "tsx backend/setup-ai-voice.ts",
+    "test:ai-voice": "tsx --test backend/src/lib/aiVoice/*.test.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4"

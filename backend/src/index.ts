@@ -47,6 +47,7 @@ import { profilesRouter } from "./routes/profiles/index.js";
 import notifyRouter from "./routes/notify/index.js";
 import musicRouter from "./routes/music/index.js";
 import adminRoutes from "./routes/admin/index.js";
+import aiCallsRoutes from "./routes/aiCalls/index.js";
 import { createLogger } from "./lib/logger/index.js";
 import { clientIp } from "./lib/clientIp/index.js";
 import { runAsLive } from "./lib/twenty/throttle/index.js";
@@ -229,6 +230,7 @@ app.use("/api/profiles", profilesRouter);
 app.use("/api/notify", notifyRouter);
 app.use("/api/music", musicRouter);
 app.use("/api/admin", adminRoutes);
+app.use("/api/ai-calls", aiCallsRoutes);
 
 /**
  * POST /api/calls/recording

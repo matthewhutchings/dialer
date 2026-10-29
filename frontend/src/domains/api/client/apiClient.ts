@@ -161,6 +161,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  aiCalls: {
+    config: () => request<AiVoiceConfigView>("/api/ai-calls/config"),
+    start: (input: AiCallInput) => request<AiCallView>("/api/ai-calls", { method: "POST", body: JSON.stringify(input) }),
+    get: (id: string) => request<AiCallView>(`/api/ai-calls/${id}`),
+    stop: (id: string) => request<{ stopping: boolean }>(`/api/ai-calls/${id}/stop`, { method: "POST" }),
+  },
   notes: {
     create: (contactType: "prospect" | "lead", contactId: string, body: string) =>
       request<LinkedContactNote>("/api/notes", {
@@ -453,3 +459,4 @@ export const api = {
       ),
   },
 };
+import type { AiCallInput, AiCallView, AiVoiceConfigView } from "@dialer/shared";

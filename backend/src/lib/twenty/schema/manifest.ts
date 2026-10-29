@@ -16,6 +16,18 @@ import type { SchemaManifest, SchemaObject, SchemaRelation } from "./types.js";
  */
 export const SCHEMA_OBJECTS: SchemaObject[] = [
   {
+    nameSingular: "agencyVoiceLock",
+    namePlural: "agencyVoiceLocks",
+    labelSingular: "Voice Lock",
+    labelPlural: "Voice Locks",
+    description: "Durable number and AI tool reservations. Never expire an uncertain live call automatically.",
+    icon: "IconLock",
+    fields: [
+      { name: "lockKey", type: "TEXT", label: "Lock Key", isUnique: true },
+      { name: "owner", type: "TEXT", label: "Owner" },
+    ],
+  },
+  {
     nameSingular: "agencyProspect",
     namePlural: "agencyProspects",
     labelSingular: "Agency Prospect",
@@ -286,6 +298,13 @@ export const SCHEMA_OBJECTS: SchemaObject[] = [
     description: "Outbound/inbound dialer calls: recording, transcript, relations to phone/prospect/lead, future meeting link.",
     icon: "IconPhoneCall",
     fields: [
+      { name: "aiVoiceState", type: "TEXT", label: "AI Voice State" },
+      { name: "aiVoiceRequestId", type: "TEXT", label: "AI Voice Request ID", isUnique: true },
+      { name: "aiVoicePermission", type: "TEXT", label: "AI Calling Permission" },
+      { name: "aiVoiceConsentEvidence", type: "TEXT", label: "AI Calling Consent Evidence" },
+      { name: "aiVoicePrivateState", type: "TEXT", label: "AI Voice Encrypted State", description: "AES-GCM encrypted call context and booking recovery credentials. Server-only." },
+      { name: "aiVoiceError", type: "TEXT", label: "AI Voice Error" },
+      { name: "aiVoiceAnsweredAt", type: "DATE_TIME", label: "AI Voice Answered At" },
       { name: "aiAnalyzedAt", type: "DATE_TIME", label: "Ai Analyzed At" },
       { name: "aiConfidence", type: "NUMBER", label: "Ai Confidence" },
       { name: "aiKeyPoints", type: "TEXT", label: "Ai Key Points" },

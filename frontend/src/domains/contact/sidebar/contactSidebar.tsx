@@ -39,6 +39,7 @@ import { initials } from "@/domains/contact/model";
 import { ContactPeople } from "@/domains/contact/people";
 import { usePeople } from "@/domains/contact/people";
 import { useContactFacets } from "@/domains/contact/list";
+import { AiCallControl } from "@/domains/dialer/ai";
 
 
 type Patch = Record<string, unknown>;
@@ -304,6 +305,7 @@ export function ContactSidebar({
           </div>
         </section>
 
+        <AiCallControl key={`${contact.type}:${contact.id}`} contact={contact} />
         <ContactPeople contact={contact} />
 
         {/* field search */}

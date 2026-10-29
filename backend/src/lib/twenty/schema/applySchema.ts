@@ -17,6 +17,7 @@ const log = createLogger("twenty-schema");
 interface LiveField {
   type: string;
   isActive: boolean;
+  isUnique: boolean;
   options: Array<{ value: string }> | null;
 }
 
@@ -28,7 +29,7 @@ interface LiveObject {
 }
 
 const SNAPSHOT_QUERY = `{ objects(paging: { first: 1000 }) { edges { node { id nameSingular namePlural
-  fields(paging: { first: 1000 }) { edges { node { name type isActive options } } } } } } }`;
+  fields(paging: { first: 1000 }) { edges { node { name type isActive isUnique options } } } } } } }`;
 
 const CREATE_OBJECT = `mutation CreateObject($input: CreateOneObjectInput!) {
   createOneObject(input: $input) { id nameSingular } }`;
@@ -63,7 +64,7 @@ export async function readLiveSchema(request: MetadataRequest = metadataRequest)
   for (const { node } of data.objects.edges) {
     const fields = new Map<string, LiveField>();
     for (const { node: f } of node.fields.edges) {
-      fields.set(f.name, { type: f.type, isActive: f.isActive !== false, options: Array.isArray(f.options) ? f.options : null });
+      fields.set(f.name, { type: f.type, isActive: f.isActive !== false, isUnique: f.isUnique === true, options: Array.isArray(f.options) ? f.options : null });
     }
     out.set(node.nameSingular, { id: node.id, nameSingular: node.nameSingular, namePlural: node.namePlural, fields });
   }
@@ -76,10 +77,11 @@ function isExistsError(err: unknown): boolean {
 }
 
 /** Drift on a field that exists: different type, inactive, or SELECT values it lacks. */
-function driftNote(want: { type: string; options?: Array<{ value: string }> }, live: LiveField): string | undefined {
+function driftNote(want: { type: string; isUnique?: boolean; options?: Array<{ value: string }> }, live: LiveField): string | undefined {
   const notes: string[] = [];
   if (live.type !== want.type) notes.push(`type is ${live.type}, manifest says ${want.type}`);
   if (!live.isActive) notes.push("field is inactive");
+  if (want.isUnique === true && !live.isUnique) notes.push("required unique constraint is missing");
   if (want.options && live.options) {
     const have = new Set(live.options.map((o) => o.value));
     const lacking = want.options.filter((o) => !have.has(o.value)).map((o) => o.value);
@@ -100,6 +102,7 @@ function fieldInput(objectMetadataId: string, f: SchemaField): Record<string, un
     description: f.description ?? "",
     ...(f.icon ? { icon: f.icon } : {}),
     isNullable,
+    ...(f.isUnique !== undefined ? { isUnique: f.isUnique } : {}),
     isLabelSyncedWithName: false,
     ...(defaultValue !== undefined ? { defaultValue } : {}),
     ...(f.settings ? { settings: f.settings } : {}),

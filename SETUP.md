@@ -29,13 +29,145 @@ Twenty is the identity provider. Sign in with your Twenty account through
 OAuth with PKCE ([docs/identity.md](docs/identity.md)); the dialer keeps no
 users or passwords of its own, and signup is disabled.
 
+## Telnyx AI discovery calls
+
+The contact sidebar has **Call with AI**, separate from the human softphone.
+It calls one UK contact at a time, identifies itself as an AI assistant,
+discovers requirements and offers a free, no-obligation meeting with Matthew.
+It cannot agree prices, discounts, contracts or delivery dates. Campaign scripts
+provide reference material, not permission to override these limits.
+
+Live calling is **off by default**. Only server-allowlisted internal numbers or
+leads with explicit permission for an automated AI sales call are allowed.
+The operator must enter evidence of that permission for every call; it is
+saved with their member ID and timestamp. Public business numbers are not
+consent. Confirm applicable automated marketing, privacy and retention rules
+before enabling prospect calls. The feature does not start audio recording;
+conversation transcripts are stored in Twenty and processed by Telnyx.
+
+### Provision from the terminal
+
+Use the existing repo-root `.env.local` for server secrets, never `VITE_`
+variables. Supply `TWENTY_BASE_URL`, `TWENTY_API_KEY`, `TELNYX_API_KEY`,
+`TELNYX_WEBHOOK_TOKEN`, `TELNYX_CALL_CONTROL_APP_ID` and an explicitly chosen
+`AGENCY_PHONE_NUMBER` matching an ACTIVE Twenty phone record. Keep the existing
+human dialer's configuration intact.
+
+Add these variables:
+
+```dotenv
+AI_VOICE_ENABLED=false
+AI_VOICE_PUBLIC_URL=https://your-dialer.example.com
+AI_VOICE_SECRET=<a dedicated random secret of at least 32 characters>
+AI_VOICE_TEST_NUMBERS=<your own UK test number in E.164>
+TELNYX_AI_ASSISTANT_ID=
+# Optional; unset model uses Telnyx's default.
+TELNYX_AI_MODEL=
+TELNYX_AI_VOICE=Telnyx.KokoroTTS.af_heart
+```
+
+Generate the dedicated secret with `openssl rand -hex 32`. Retain it securely:
+changing it invalidates per-call tool credentials and prevents recovery of
+previously encrypted booking state.
+
+```bash
+# Inspect the assistant configuration; no provider changes or calls.
+bun run ai:voice:setup --dry-run
+
+# After the base dialer schema exists, add voice fields and durable locks.
+bun run ai:voice:setup --schema --apply
+
+# Alternative: use the existing Twenty secrets inside the deployed backend.
+# Requires matching AI_VOICE_SECRET locally and on Vercel, and calling disabled.
+bun run ai:voice:setup --schema --remote --apply
+
+# Create/update the named assistant and read it back to verify.
+bun run ai:voice:setup --apply
+
+# Offline checks: fictional contacts and mocked provider/calendar HTTP.
+bun run test:ai-voice
+```
+
+The setup command outputs `TELNYX_AI_ASSISTANT_ID`; save that value locally
+and in backend deployment configuration. It never purchases or reassigns phone
+numbers, repoints an existing webhook, or places a call. It uses Telnyx's
+supported inline webhook tools for compatibility with the installed SDK.
+
+Deploy the backend and frontend changes before setting `AI_VOICE_ENABLED=true`.
+`AI_VOICE_PUBLIC_URL` must be the public HTTPS origin routing `/api/*` to this
+Express backend. The Call Control application's webhook must be:
+
+```text
+https://your-dialer.example.com/api/webhooks/telnyx?token=<TELNYX_WEBHOOK_TOKEN>
+```
+
+The legacy standalone `frontend/api/telnyx-webhook.ts` receiver does not implement
+AI orchestration. Use the root multi-service Vercel configuration (or the
+Express server), not a frontend-only deployment. Setup validates the configured
+application URL without changing it.
+Remote schema bootstrap is HMAC-authenticated with the dedicated voice secret,
+can only add the voice fields/locks, and refuses requests while AI calling is
+enabled. It never returns deployment credentials. Use this when Vercel's
+non-exportable secrets are the only copy of the Twenty credentials.
+
+### Booking tools
+
+The assistant uses server-authenticated, per-call webhook tools:
+`meeting_details`, `availability`, `book`, `callback`, `opt_out` and `end`.
+No CRM API key or booking management credential is exposed to tool arguments.
+The backend uses [Fewzen's booking contract](https://booking.fewzen.ai/openapi.json)
+and [booking guide](https://booking.fewzen.ai/AGENTS.md); publishing `llms.txt`
+alone does not install these tools.
+
+Availability is live, not a reservation. The prospect must confirm their name,
+email, IANA timezone and selected returned slot. A random 32-byte booking
+idempotency key and the original payload are encrypted and persisted before
+booking. Timeouts and unknown outcomes reuse the same key and payload; only an
+explicit unavailable-slot response permits a newly agreed slot and new key.
+The private management URL is encrypted at rest and omitted from model tool
+responses, transcripts and ordinary CRM notes. Booking confirmation updates the
+call's existing meeting fields explicitly; Fewzen's own CRM sync is best-effort.
+This first version does not expose rescheduling to the voice agent.
+
+The booking service documents 10 creation requests per client per 15 minutes.
+Rate-limit errors are reported and must not be interpreted as bookings.
+
+### Call lifecycle and recovery
+
+Calls persist before dialing and continue without an open browser. Maximum
+ring time is 30 seconds; maximum call time is 600 seconds. Database-unique
+reservations in `agencyVoiceLocks` coordinate AI calls with human number
+claim/state/heartbeat/release operations while AI calling is enabled. Startup
+checks the required unique constraints instead of relying on process memory.
+
+Provider answer events start the assistant; hangup events finalize the call and
+release reservations. Conversation events attach only user/assistant text,
+excluding system instructions and tool credentials. A final conversation event
+also generates the existing AI summary/rating when `OPENAI_API_KEY` is configured.
+Duplicate and late call events cannot reopen an ended call.
+
+**End AI call** sends a server-side hangup request; provider confirmation releases
+the number. An uncertain dial or lost terminal webhook deliberately keeps its
+reservation: do not automatically expire it or launch another call. Inspect the
+call in Telnyx, stop any active leg, then replay its authenticated hangup webhook
+to the canonical backend. If the provider never created a call, an operator must
+verify that fact before manually clearing the matching reservation's `lockKey`
+and deleting it in Twenty. Do not clear reservations while a call or booking
+operation might still be running. Orphaned operation locks after a server crash
+likewise require verification before release.
+
+Test internal calls for interruptions, voicemail, opt-out, no answer, callback,
+calendar conflict, lost booking confirmation, duplicate triggers, hangup and
+closing the browser before enabling consented prospect calls. Offline tests do
+not certify the deployed phone number, provider account, audio or callback reachability.
+
 ## Data
 
 There is no database. Every record is a custom object in your Twenty
 workspace, created by `bun run twenty:schema` from
 [backend/src/lib/twenty/schema/manifest.ts](backend/src/lib/twenty/schema/manifest.ts):
 `agencyProspect`, `agencyLead`, `agencyCampaign`, `agencyScript`,
-`agencyPhone`, `agencyCall`, `agencyPerson`, `agencyOffer`, `callCampaign`
+`agencyPhone`, `agencyCall`, `agencyPerson`, `agencyOffer`, `agencyVoiceLock`, `callCampaign`
 and `dialerAudioSession`. The command only adds what is missing;
 `bun run twenty:schema:check` is the dry run.
 
