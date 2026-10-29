@@ -76,7 +76,7 @@ type Row = Record<string, string | null | undefined> & { id: string };
 export function toSession(row: Row): AudioSession {
   return {
     id: row.id,
-    mode: row.mode === "dial_in" ? "dial_in" : "call_me",
+    mode: row.mode === "sip_presence" ? "sip_presence" : row.mode === "dial_in" ? "dial_in" : "call_me",
     status: (row.status as AudioSession["status"]) || "failed",
     memberId: row.memberId || "",
     agentPhone: row.agentPhone || null,

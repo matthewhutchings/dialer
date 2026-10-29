@@ -16,7 +16,7 @@
  * event flow is unit-tested without real calls.
  */
 
-export type AudioMode = "call_me" | "dial_in";
+export type AudioMode = "call_me" | "dial_in" | "sip_presence";
 export type SessionStatus = "calling_agent" | "waiting_dial_in" | "ready" | "ended" | "failed";
 export type ContactState = "idle" | "dialing" | "ringing" | "answered" | "ended";
 
@@ -39,13 +39,22 @@ export interface AudioSession {
 
 /** Carried through Telnyx as base64 client_state and echoed on webhooks. */
 export interface BridgeState {
-  kind: "agent" | "contact" | "dialin";
+  kind: "agent" | "contact" | "dialin" | "inbound" | "inbound_agent" | "inbound_fallback";
   sessionId?: string;
   tries?: number;
 }
 
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 export const MAX_PIN_TRIES = 3;
+export const SIP_PRESENCE_TTL_MS = 60_000;
+
+export function sipPresenceMemberId(memberId: string, instanceId: string): string {
+  return `sip-presence:${memberId}:${instanceId}`;
+}
+
+export function isSipAgentOnline(session: AudioSession, now: Date): boolean {
+  return session.mode === "sip_presence" && session.status === "ready" && !isExpired(session, now);
+}
 
 export function encodeState(state: BridgeState): string {
   return Buffer.from(JSON.stringify(state), "utf8").toString("base64");
@@ -98,6 +107,62 @@ export interface BridgeDeps {
   now(): Date;
 }
 
+export interface IncomingCallDeps {
+  store: { list(): Promise<AudioSession[]> };
+  calls: {
+    answer(callControlId: string, state: BridgeState): Promise<void>;
+    dial(params: {
+      to: string;
+      from: string;
+      state: BridgeState;
+      linkTo: string;
+      timeoutSecs: number;
+    }): Promise<string>;
+  };
+  now(): Date;
+}
+
+export async function handleIncomingCall(
+  eventType: string,
+  payload: any,
+  config: { inboundNumber: string; fallbackPhone: string; agentSipUri: string },
+  deps: IncomingCallDeps,
+): Promise<string | null> {
+  const ccid: string | undefined = payload?.call_control_id;
+  if (
+    eventType !== "call.initiated" ||
+    !ccid ||
+    payload?.direction !== "incoming" ||
+    decodeState(payload?.client_state) ||
+    !config.inboundNumber ||
+    digitsOnly(payload?.to) !== digitsOnly(config.inboundNumber)
+  ) return null;
+
+  const now = deps.now();
+  const hasOnlineAgent = (await deps.store.list()).some((session) => isSipAgentOnline(session, now));
+  const to = hasOnlineAgent ? config.agentSipUri : config.fallbackPhone;
+  if (!/^\+[1-9]\d{6,14}$/.test(config.inboundNumber)) {
+    throw new Error("TELNYX_INBOUND_NUMBER must be in E.164 format.");
+  }
+  if (hasOnlineAgent && !/^sips?:[^@\s]+@[^@\s]+$/i.test(to)) {
+    throw new Error("TELNYX_AGENT_SIP_URI must be a SIP URI while an agent is online.");
+  }
+  if (!hasOnlineAgent && !/^\+[1-9]\d{6,14}$/.test(to)) {
+    throw new Error("TELNYX_FALLBACK_PHONE must be in E.164 format when no agents are online.");
+  }
+
+  const routeKind = hasOnlineAgent ? "inbound_agent" : "inbound_fallback";
+  await deps.calls.answer(ccid, { kind: "inbound" });
+  const outboundCallId = await deps.calls.dial({
+    to,
+    from: config.inboundNumber,
+    state: { kind: routeKind, sessionId: ccid },
+    linkTo: ccid,
+    timeoutSecs: 45,
+  });
+  return `incoming call ${ccid} bridged via ${hasOnlineAgent ? "online agent" : "mobile fallback"} (outbound ${outboundCallId})`;
+}
+
 const PIN_PROMPT = "Welcome to the Cold Dialer. Please enter your four digit PIN.";
 const PIN_RETRY = "That PIN was not recognised. Please enter the PIN shown on your screen.";
 const CONNECTED = "You are connected. Dialing will start from your screen.";
@@ -145,6 +210,16 @@ export async function handleBridgeEvent(eventType: string, payload: any, deps: B
     }
     await deps.calls.hangup(ccid);
     return "PIN rejected; hung up";
+  }
+
+  if (
+    eventType === "call.hangup" &&
+    (state?.kind === "inbound_agent" || state?.kind === "inbound_fallback") &&
+    state.sessionId &&
+    String(payload?.hangup_cause ?? "").toLowerCase() !== "normal_clearing"
+  ) {
+    await deps.calls.hangup(state.sessionId);
+    return `inbound call ${state.sessionId} ended because its destination did not connect`;
   }
 
   const sessions = await deps.store.list();

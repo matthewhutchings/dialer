@@ -5,8 +5,8 @@ import { analyzeCallTranscript, isAiConfigured } from "../../../lib/ai/analysis/
 import { createFollowUpTasks } from "../../../lib/ai/analysis/followUpTasks.js";
 import { createLogger } from "../../../lib/logger/index.js";
 import type { AgencyCall } from "../../calls/types.js";
-import { handleBridgeEvent } from "../../../lib/audioBridge/index.js";
-import { bridgeConfig, bridgeDeps } from "../../../lib/audioBridge/telnyx.js";
+import { handleBridgeEvent, handleIncomingCall } from "../../../lib/audioBridge/index.js";
+import { bridgeConfig, bridgeDeps, telnyxIncomingCalls } from "../../../lib/audioBridge/telnyx.js";
 import { handleMessageEvent } from "../../messages/events.js";
 
 const log = createLogger('telnyx-webhook');
@@ -191,10 +191,20 @@ router.post(["/telnyx", "/"], async (req, res) => {
   try {
     let result = "ignored";
     // Phone audio (Call me / Dial in) call-control events, when configured.
-    const bridged = bridgeConfig().appId ? await handleBridgeEvent(eventType, payload, bridgeDeps()) : null;
-    const texted = bridged ? null : await handleMessageEvent(eventType, payload);
+    const config = bridgeConfig();
+    const bridged = config.appId ? await handleBridgeEvent(eventType, payload, bridgeDeps()) : null;
+    const inbound = !bridged && config.appId && config.inboundNumber
+      ? await handleIncomingCall(eventType, payload, config, {
+          store: bridgeDeps().store,
+          calls: telnyxIncomingCalls,
+          now: () => new Date(),
+        })
+      : null;
+    const texted = inbound || bridged ? null : await handleMessageEvent(eventType, payload);
     if (bridged) {
       result = bridged;
+    } else if (inbound) {
+      result = inbound;
     } else if (texted) {
       result = texted;
     } else if (eventType === "call.recording.saved") {

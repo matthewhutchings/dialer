@@ -315,6 +315,8 @@ export const api = {
   },
 
   audioSessions: {
+    presence: (data: { instanceId: string; registered: boolean }) =>
+      request<void>("/api/audio-sessions/presence", { method: "POST", body: JSON.stringify(data) }),
     config: () =>
       request<{ callMeAvailable: boolean; dialInAvailable: boolean; dialInNumber: string | null; missing: string[] }>(
         "/api/audio-sessions/config",

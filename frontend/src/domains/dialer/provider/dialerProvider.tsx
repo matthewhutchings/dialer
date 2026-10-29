@@ -384,6 +384,33 @@ export function DialerProvider({ children }: { children: ReactNode }) {
     agentRef.current = null;
   }, []);
 
+  // Keep the backend's failover decision aligned with the actual SIP REGISTER.
+  useEffect(() => {
+    if (!user) return;
+    const key = "cold-dialer-sip-presence-id";
+    let instanceId = localStorage.getItem(key);
+    if (!instanceId) {
+      instanceId = crypto.randomUUID();
+      localStorage.setItem(key, instanceId);
+    }
+
+    let stopped = false;
+    const send = (isRegistered: boolean) => {
+      void api.audioSessions.presence({ instanceId, registered: isRegistered }).catch((err) => {
+        if (!stopped) sipLog.error("register", `presence heartbeat failed: ${describeError(err).detail}`);
+      });
+    };
+    send(registered);
+    const interval = registered ? setInterval(() => send(true), 20_000) : null;
+    return () => {
+      stopped = true;
+      if (interval) clearInterval(interval);
+      if (registered) void api.audioSessions.presence({ instanceId, registered: false }).catch((err) => {
+        sipLog.error("register", `presence release failed: ${describeError(err).detail}`);
+      });
+    };
+  }, [registered, user]);
+
   // ---- helpers ----
   const finishCall = useCallback((finalOutcome?: string) => {
     clearUnanswered();

@@ -67,5 +67,7 @@ Backend rule: all Telnyx REST goes through `backend/src/lib/telnyx.ts`
 
 `TELNYX_API_KEY` (backend + scripts + Vercel fn) · `TELNYX_MESSAGING_PROFILE_ID` /
 `TELNYX_MESSAGING_PROFILE_US` (backend default/US sends) · `TELNYX_WEBHOOK_TOKEN`
-(shared gate for our receiver) · `TELNYX_WEBHOOK_URL` (where Telnyx points).
+(shared gate for our receiver) · `TELNYX_WEBHOOK_URL` (where Telnyx points) ·
+`TELNYX_INBOUND_NUMBER`, `TELNYX_AGENT_SIP_URI` and `TELNYX_FALLBACK_PHONE`
+(optional inbound call routing; see [deployment](../deployment.md#telnyx-inbound-call-fallback)).
 Browser SIP creds are `VITE_SIP_*` (baked into the SPA bundle at build time).

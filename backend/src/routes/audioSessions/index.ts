@@ -4,7 +4,7 @@ import { createLogger } from "../../lib/logger/index.js";
 import { telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { audioSessionStore } from "../../lib/twenty/audioSession/index.js";
 import { bridgeConfig, telnyxBridgeCalls } from "../../lib/audioBridge/telnyx.js";
-import { SESSION_TTL_MS, digitsOnly, generatePin, isExpired, isLive, type AudioSession } from "../../lib/audioBridge/index.js";
+import { SESSION_TTL_MS, SIP_PRESENCE_TTL_MS, digitsOnly, generatePin, isExpired, isLive, sipPresenceMemberId, type AudioSession } from "../../lib/audioBridge/index.js";
 
 /**
  * Phone audio for the dialer (Settings -> Audio Source: "Call me" / "Dial in").
@@ -14,6 +14,7 @@ import { SESSION_TTL_MS, digitsOnly, generatePin, isExpired, isLive, type AudioS
 const router = Router();
 router.use(authMiddleware);
 const log = createLogger("audio-sessions");
+const INSTANCE_ID = /^[a-zA-Z0-9-]{16,80}$/;
 
 const E164 = /^\+[1-9]\d{6,14}$/;
 
@@ -55,6 +56,39 @@ router.get("/config", (_req, res) => {
     dialInNumber: dialInNumber || null,
     missing: [!appId && "TELNYX_CALL_CONTROL_APP_ID", !dialInNumber && "TELNYX_DIAL_IN_NUMBER"].filter(Boolean),
   });
+});
+
+/** POST /api/audio-sessions/presence - heartbeat for the registered browser SIP agent. */
+router.post("/presence", async (req: AuthRequest, res) => {
+  const memberId = req.workspaceMemberId ?? "";
+  const instanceId = String(req.body?.instanceId ?? "").trim();
+  const registered = req.body?.registered;
+  if (!memberId) return void res.status(401).json({ error: "Sign in again to update phone availability." });
+  if (!INSTANCE_ID.test(instanceId)) return void res.status(400).json({ error: "A valid phone session id is required." });
+  if (typeof registered !== "boolean") return void res.status(400).json({ error: "registered must be true or false." });
+
+  try {
+    const now = new Date();
+    const recordMemberId = sipPresenceMemberId(memberId, instanceId);
+    const sessions = await audioSessionStore.list();
+    const existing = sessions.find((session) => session.mode === "sip_presence" && session.memberId === recordMemberId);
+    const patch: Partial<AudioSession> = registered
+      ? {
+          mode: "sip_presence",
+          status: "ready",
+          memberId: recordMemberId,
+          expiresAt: new Date(now.getTime() + SIP_PRESENCE_TTL_MS).toISOString(),
+          error: null,
+        }
+      : { status: "ended", expiresAt: now.toISOString() };
+
+    if (existing) await audioSessionStore.update(existing.id, patch);
+    else if (registered) await audioSessionStore.create(patch);
+    res.status(204).end();
+  } catch (err: any) {
+    log.error(`presence update failed: ${err?.message}`);
+    res.status(502).json({ error: "Could not update phone availability.", details: err?.message });
+  }
 });
 
 /** POST /api/audio-sessions { mode, agentPhone?, from } - open your phone line. */

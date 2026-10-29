@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeState, encodeState, generatePin, handleBridgeEvent, type AudioSession, type BridgeDeps } from "./index.js";
+import { decodeState, encodeState, generatePin, handleBridgeEvent, handleIncomingCall, type AudioSession, type BridgeDeps } from "./index.js";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
 
@@ -83,6 +83,81 @@ test("calls to other numbers are not treated as dial-in", async () => {
   assert.equal(await handleBridgeEvent("call.initiated", { call_control_id: "x", direction: "incoming", to: "+15559990000" }, deps), null);
 });
 
+test("inbound call uses mobile fallback only when no SIP agent is online", async () => {
+  const sessions: AudioSession[] = [];
+  const actions: unknown[][] = [];
+  const result = await handleIncomingCall(
+    "call.initiated",
+    { call_control_id: "in-1", direction: "incoming", to: "+441234567890" },
+    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    {
+      store: { list: async () => sessions },
+      calls: {
+        answer: async (...args) => { actions.push(["answer", ...args]); },
+        dial: async (params) => { actions.push(["dial", params]); return "out-1"; },
+      },
+      now: () => NOW,
+    },
+  );
+  assert.match(result!, /mobile fallback/);
+  assert.deepEqual(actions, [
+    ["answer", "in-1", { kind: "inbound" }],
+    ["dial", { to: "+447700900123", from: "+441234567890", state: { kind: "inbound_fallback", sessionId: "in-1" }, linkTo: "in-1", timeoutSecs: 45 }],
+  ]);
+});
+
+test("inbound call rings the configured SIP destination when an agent is online", async () => {
+  const sessions = [session({
+    mode: "sip_presence",
+    status: "ready",
+    expiresAt: new Date(NOW.getTime() + 30_000).toISOString(),
+  })];
+  const dialed: unknown[] = [];
+  await handleIncomingCall(
+    "call.initiated",
+    { call_control_id: "in-2", direction: "incoming", to: "+441234567890" },
+    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    {
+      store: { list: async () => sessions },
+      calls: {
+        answer: async () => {},
+        dial: async (params) => { dialed.push(params); return "out-2"; },
+      },
+      now: () => NOW,
+    },
+  );
+  assert.deepEqual(dialed, [{
+    to: "sip:agent@example.com",
+    from: "+441234567890",
+    state: { kind: "inbound_agent", sessionId: "in-2" },
+    linkTo: "in-2",
+    timeoutSecs: 45,
+  }]);
+});
+
+test("stale SIP presence does not suppress mobile fallback", async () => {
+  const sessions = [session({
+    mode: "sip_presence",
+    status: "ready",
+    expiresAt: new Date(NOW.getTime() - 1).toISOString(),
+  })];
+  const dialed: string[] = [];
+  await handleIncomingCall(
+    "call.initiated",
+    { call_control_id: "in-3", direction: "incoming", to: "+441234567890" },
+    { inboundNumber: "+441234567890", fallbackPhone: "+447700900123", agentSipUri: "sip:agent@example.com" },
+    {
+      store: { list: async () => sessions },
+      calls: {
+        answer: async () => {},
+        dial: async (params) => { dialed.push(params.to); return "out-3"; },
+      },
+      now: () => NOW,
+    },
+  );
+  assert.deepEqual(dialed, ["+447700900123"]);
+});
+
 test("contact leg: ringing, answered, then ended with the cause", async () => {
   const s = session({ status: "ready", contactLegId: "c-1", contactState: "dialing" });
   const { deps } = fakeDeps([s]);
@@ -111,4 +186,15 @@ test("an unanswered call-me fails with a reason", async () => {
   await handleBridgeEvent("call.hangup", { call_control_id: "agent-1", hangup_cause: "timeout" }, deps);
   assert.equal(s.status, "failed");
   assert.match(s.error!, /did not answer/);
+});
+
+test("an unanswered inbound destination ends the answered caller leg without fallback", async () => {
+  const { deps, log } = fakeDeps([]);
+  const result = await handleBridgeEvent("call.hangup", {
+    call_control_id: "agent-leg",
+    client_state: encodeState({ kind: "inbound_agent", sessionId: "caller-leg" }),
+    hangup_cause: "timeout",
+  }, deps);
+  assert.match(result!, /destination did not connect/);
+  assert.ok(log.includes("hangup caller-leg"));
 });

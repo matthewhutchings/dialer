@@ -99,6 +99,10 @@ See [HOSTINGER_SETUP.md](../scripts/HOSTINGER_SETUP.md)
 | TWENTY_BASE_URL | Yes | Your Twenty instance URL |
 | TWENTY_API_KEY | Yes | Twenty API key |
 | TWENTY_DATABASE_URL | Yes | PostgreSQL connection string |
+| TELNYX_CALL_CONTROL_APP_ID | No | Telnyx Call Control application for phone audio and inbound routing |
+| TELNYX_INBOUND_NUMBER | No | Telnyx business number to route through the Call Control application |
+| TELNYX_AGENT_SIP_URI | No | SIP address to ring when an agent is registered; match `VITE_SIP_URI` |
+| TELNYX_FALLBACK_PHONE | No | E.164 mobile to bridge only when no agent SIP heartbeat is active |
 
 ## SIP Configuration
 
@@ -112,3 +116,24 @@ VITE_SIP_CALLER_ID=+1XXXXXXXXXX
 ```
 
 See [SIP Providers Guide](sip-providers.md) for provider-specific setup.
+
+### Telnyx inbound call fallback
+
+To ring agents in the browser first and forward inbound callers to a mobile
+only when no agent is registered:
+
+1. Configure a Telnyx Call Control application with the backend webhook URL
+   (`/api/webhooks/telnyx?token=...`) and set its ID as
+   `TELNYX_CALL_CONTROL_APP_ID`.
+2. Assign the business number to that Call Control application and set it as
+   `TELNYX_INBOUND_NUMBER`.
+3. Set `TELNYX_AGENT_SIP_URI` to the same SIP identity as `VITE_SIP_URI`.
+   Set `TELNYX_FALLBACK_PHONE` to the mobile in E.164 format.
+4. Ensure the business number is authorized as outbound caller ID in Telnyx.
+
+The browser reports a short-lived heartbeat while its SIP registration is
+active. If one is live, Telnyx calls the SIP address; otherwise it dials the
+fallback mobile. The outbound leg uses the inbound business number as caller
+ID and bridges to the caller when the destination answers. This applies only to inbound
+calls to `TELNYX_INBOUND_NUMBER`; it does not fall back just because a
+registered agent misses the call.

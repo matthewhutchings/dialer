@@ -10,6 +10,9 @@ export function bridgeConfig() {
   return {
     appId: process.env.TELNYX_CALL_CONTROL_APP_ID?.trim() || "",
     dialInNumber: process.env.TELNYX_DIAL_IN_NUMBER?.trim() || "",
+    inboundNumber: process.env.TELNYX_INBOUND_NUMBER?.trim() || "",
+    fallbackPhone: process.env.TELNYX_FALLBACK_PHONE?.trim() || "",
+    agentSipUri: process.env.TELNYX_AGENT_SIP_URI?.trim() || "",
   };
 }
 
@@ -62,6 +65,17 @@ export const telnyxBridgeCalls = {
     if (!id) throw new Error("Telnyx did not return a call_control_id");
     return id;
   },
+};
+
+export const telnyxIncomingCalls = {
+  answer: telnyxBridgeCalls.answer,
+  dial: (params: {
+    to: string;
+    from: string;
+    state: BridgeState;
+    linkTo: string;
+    timeoutSecs: number;
+  }) => telnyxBridgeCalls.dial(params),
 };
 
 export function bridgeDeps(): BridgeDeps {
