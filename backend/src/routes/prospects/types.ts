@@ -17,6 +17,8 @@ export interface AgencyProspect {
   reviewCount?: number;
   email?: string;
   callOpener?: string | null;
+  decisionMaker?: string | null;
+  decisionMakerTitle?: string | null;
   externalId?: string;
   outboundState?: string | { value?: string; label?: string };
   outboundLabel?: string | { value?: string; label?: string };

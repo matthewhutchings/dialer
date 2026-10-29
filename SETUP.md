@@ -110,6 +110,34 @@ can only add the voice fields/locks, and refuses requests while AI calling is
 enabled. It never returns deployment credentials. Use this when Vercel's
 non-exportable secrets are the only copy of the Twenty credentials.
 
+### CRM-aware conversations
+
+Before dialing, the backend refreshes the selected record under the call
+reservation and saves an encrypted briefing. It includes known company details,
+the expected person's name/role/email where available, linked people, record
+notes, up to five recent linked notes (from the latest 20 note links), the last
+three call summaries/outcomes/meeting statuses, and the campaign script.
+Linked people are limited to 20; a prospect's person is identified by a unique
+matching phone number or its recorded decision maker, not simply the first person
+at the company. Leads use their recorded name and linked person. A company name
+is never used as a person's name.
+
+The assistant confirms known identity details rather than collecting them again,
+asks permission to continue, and uses recorded requirements as tentative
+background for follow-up questions. It confirms the intended attendee's stored
+email before booking. A shared business number does not establish who answered;
+private notes, email and previous meeting details must not be disclosed before
+identity confirmation. Corrections and missing information still require questions.
+
+Briefing text is bounded: 2,000 characters for record notes, 1,200 per linked
+note, 1,000 each for a call's summary and notes, and 8,000 for the campaign script.
+Linked-note attachment/link URLs, full transcripts, raw CRM objects and booking
+management credentials are not included. CRM text is untrusted reference data,
+never instructions. A context-fetch failure blocks dialing explicitly rather
+than silently making an uninformed call. Each answered call supplies the current
+application instructions, so an older saved Telnyx prompt cannot override this
+behavior. Calls created before this change retain their original minimal briefing.
+
 ### Booking tools
 
 The assistant uses server-authenticated, per-call webhook tools:
@@ -141,16 +169,30 @@ claim/state/heartbeat/release operations while AI calling is enabled. Startup
 checks the required unique constraints instead of relying on process memory.
 
 Provider answer events start the assistant; hangup events finalize the call and
-release reservations. Conversation events attach only user/assistant text,
+release reservations without waiting for transcript/event processing locks.
+Unrelated playback/insight events do not acquire a lifecycle lock.
+Conversation events use a separate transcript lock and attach only user/assistant text,
 excluding system instructions and tool credentials. A final conversation event
 also generates the existing AI summary/rating when `OPENAI_API_KEY` is configured.
 Duplicate and late call events cannot reopen an ended call.
 
-**End AI call** sends a server-side hangup request; provider confirmation releases
-the number. An uncertain dial or lost terminal webhook deliberately keeps its
-reservation: do not automatically expire it or launch another call. Inspect the
-call in Telnyx, stop any active leg, then replay its authenticated hangup webhook
-to the canonical backend. If the provider never created a call, an operator must
+Status/config refreshes verify active calls with Telnyx. A matching call ID,
+`is_alive=false` and a valid provider `end_time` finalize a missed hangup using
+the provider's time/duration. A false liveness value alone, a failed lookup or
+an unrelated call ID never releases the number.
+
+**End AI call** sends a server-side hangup request and checks provider status.
+The response distinguishes a still-live call from a confirmed ended call.
+Telnyx's specific already-ended error `90018` is reconciled, not treated as an
+unrecoverable stop failure. If its status record has expired (404), that explicit
+already-ended evidence can release the reservation, with an operator-visible
+warning that the exact end time is unavailable; timing is not invented.
+Other errors remain explicit and preserve reservations.
+
+An uncertain dial without a provider call ID deliberately keeps its reservation:
+do not automatically expire it or launch another call. Inspect the call in Telnyx,
+stop any active leg, then replay its authenticated hangup webhook to the canonical
+backend. If the provider never created a call, an operator must
 verify that fact before manually clearing the matching reservation's `lockKey`
 and deleting it in Twenty. Do not clear reservations while a call or booking
 operation might still be running. Orphaned operation locks after a server crash

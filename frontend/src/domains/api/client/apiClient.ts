@@ -165,7 +165,7 @@ export const api = {
     config: () => request<AiVoiceConfigView>("/api/ai-calls/config"),
     start: (input: AiCallInput) => request<AiCallView>("/api/ai-calls", { method: "POST", body: JSON.stringify(input) }),
     get: (id: string) => request<AiCallView>(`/api/ai-calls/${id}`),
-    stop: (id: string) => request<{ stopping: boolean }>(`/api/ai-calls/${id}/stop`, { method: "POST" }),
+    stop: (id: string) => request<{ stopping: boolean; call: AiCallView }>(`/api/ai-calls/${id}/stop`, { method: "POST" }),
   },
   notes: {
     create: (contactType: "prospect" | "lead", contactId: string, body: string) =>

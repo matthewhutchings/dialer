@@ -59,7 +59,7 @@ test("contact AI controls require permission, preserve request identity and stop
     if (path === "/api/ai-calls/test-ai-call/stop") {
       stopped = true;
       activeCall = { ...activeCall, state: "ENDED", active: false };
-      body = { stopping: true };
+      body = { stopping: false, call: activeCall };
     }
     return route.fulfill({ json: body });
   });
@@ -85,5 +85,7 @@ test("contact AI controls require permission, preserve request identity and stop
   await page.getByRole("button", { name: "End AI call", exact: true }).click();
   await trigger.waitFor();
   assert.equal(stopped, true);
+  await page.getByText("Telnyx confirmed the call ended. The number has been released.", { exact: true }).waitFor();
+  assert.equal(await page.getByText("Waiting for Telnyx to confirm the call has ended.", { exact: true }).count(), 0);
   assert.deepEqual(errors, []);
 });

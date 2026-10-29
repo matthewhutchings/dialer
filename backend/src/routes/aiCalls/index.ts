@@ -1,7 +1,7 @@
 import { Router, type Response } from "express";
 import { authMiddleware, requireMember, type AuthRequest } from "../../middleware/auth.js";
 import { resolveActor } from "../../lib/twenty/actor/index.js";
-import { activeVoiceCall, callView, getVoiceCall, runVoiceTool, startVoiceCall, stopVoiceCall } from "../../lib/aiVoice/index.js";
+import { activeVoiceCall, callView, getVoiceCall, reconcileVoiceCall, runVoiceTool, startVoiceCall, stopVoiceCall } from "../../lib/aiVoice/index.js";
 import { configurationError, validCallToken, validSetupToken, VoiceError, voiceConfig } from "../../lib/aiVoice/config.js";
 import { createLogger } from "../../lib/logger/index.js";
 import { verifyVoiceSchema } from "../../lib/aiVoice/locks.js";
@@ -91,7 +91,7 @@ router.post("/", async (req: AuthRequest, res) => {
 });
 router.get("/:id", async (req, res) => {
   try {
-    res.json(callView(await getVoiceCall(String(req.params.id))));
+    res.json(callView(await reconcileVoiceCall(await getVoiceCall(String(req.params.id)))));
   } catch (error) {
     failure(res, error);
   }
@@ -99,8 +99,8 @@ router.get("/:id", async (req, res) => {
 router.post("/:id/stop", async (req: AuthRequest, res) => {
   if (!requireMember(req, res)) return;
   try {
-    await stopVoiceCall(await getVoiceCall(String(req.params.id)));
-    res.json({ stopping: true });
+    const call = callView(await stopVoiceCall(await getVoiceCall(String(req.params.id))));
+    res.json({ stopping: call.active, call });
   } catch (error) {
     failure(res, error);
   }

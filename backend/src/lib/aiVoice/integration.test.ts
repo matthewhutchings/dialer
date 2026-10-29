@@ -21,7 +21,9 @@ delete process.env.OPENAI_API_KEY;
 
 const voice = await import("./index.js");
 const locks = await import("./locks.js");
-const { callToken, setupToken } = await import("./config.js");
+const { callToken, setupToken, decryptState, encryptState } = await import("./config.js");
+const { ASSISTANT_INSTRUCTIONS } = await import("./assistant.js");
+type VoiceBriefing = import("./context.js").VoiceBriefing;
 const { generateToken } = await import("../../middleware/auth.js");
 const { default: router } = await import("../../routes/aiCalls/index.js");
 const originalFetch = globalThis.fetch;
@@ -33,6 +35,12 @@ const memberId = "33333333-3333-4333-8333-333333333333";
 let providerCalls: { path: string; body: Record<string, unknown> }[];
 let uncertainDial: boolean;
 let bookingRequests: Record<string, unknown>[];
+let contactReads: number;
+let refreshContact: Partial<Row> | undefined;
+let failedObject: string | undefined;
+let providerStatus: Record<string, unknown>;
+let statusFailure: number | undefined;
+let hangupError: string | undefined;
 
 function table(name: string): Map<string, Row> {
   let value = data.get(name);
@@ -45,6 +53,12 @@ beforeEach(() => {
   providerCalls = [];
   bookingRequests = [];
   uncertainDial = false;
+  contactReads = 0;
+  refreshContact = undefined;
+  failedObject = undefined;
+  providerStatus = { call_control_id: "fake-call-control-id", is_alive: true };
+  statusFailure = undefined;
+  hangupError = undefined;
   table("agencyProspects").set(contactId, { id: contactId, name: "Fictional Test Company", phone: "+442079460456", coldCallStatus: "NEW" });
   table("agencyPhones").set(phoneId, { id: phoneId, phoneNumber: process.env.AGENCY_PHONE_NUMBER, state: "ACTIVE" });
   globalThis.fetch = async (request, init) => {
@@ -52,7 +66,13 @@ beforeEach(() => {
     if (url.hostname === "127.0.0.1") return originalFetch(request, init);
     const body: Record<string, unknown> = init?.body ? JSON.parse(String(init.body)) : {};
     if (url.hostname === "api.telnyx.com") {
+      if ((!init?.method || init.method === "GET") && url.pathname === "/v2/calls/fake-call-control-id") {
+        return statusFailure ? Response.json({ errors: [{ code: "test-status-error" }] }, { status: statusFailure }) : Response.json({ data: providerStatus });
+      }
       providerCalls.push({ path: url.pathname, body });
+      if (url.pathname.endsWith("/actions/hangup") && hangupError) {
+        return Response.json({ errors: [{ code: hangupError, title: "Test provider rejection" }] }, { status: 422 });
+      }
       return Response.json({ data: url.pathname === "/v2/calls" && !uncertainDial ? { call_control_id: "fake-call-control-id" } : {} });
     }
     if (url.hostname === "booking.fewzen.ai") {
@@ -76,6 +96,7 @@ beforeEach(() => {
     }
     const [, , object, id] = url.pathname.split("/");
     const rows = table(object);
+    if (object === failedObject) return Response.json({ error: "CRM context unavailable" }, { status: 403 });
     if (init?.method === "POST") {
       if (object === "agencyVoiceLocks" && [...rows.values()].some((row) => row.lockKey && row.lockKey === body.lockKey)) {
         return Response.json({ error: "unique constraint" }, { status: 409 });
@@ -94,11 +115,20 @@ beforeEach(() => {
       rows.delete(id);
       return new Response(null, { status: 204 });
     }
-    if (id) return rows.has(id) ? Response.json({ data: rows.get(id) }) : Response.json({ error: "not found" }, { status: 404 });
+    if (id) {
+      if (object === "agencyProspects" && id === contactId && ++contactReads === 2 && refreshContact) {
+        Object.assign(rows.get(id)!, refreshContact);
+      }
+      return rows.has(id) ? Response.json({ data: rows.get(id) }) : Response.json({ error: "not found" }, { status: 404 });
+    }
     const filter = url.searchParams.get("filter");
     const match = filter?.match(/^(\w+)\[eq\]:"([^"]+)"$/);
-    const found = [...rows.values()].filter((row) => !match || row[match[1]] === match[2]);
-    return Response.json({ data: { [object]: found } });
+    const ids = filter?.match(/^id\[in\]:\[([^\]]+)\]$/)?.[1].split(",");
+    const found = [...rows.values()].filter((row) => (!match || row[match[1]] === match[2]) && (!ids || ids.includes(row.id)));
+    if (url.searchParams.get("orderBy") === "createdAt[DescNullsLast]") {
+      found.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    }
+    return Response.json({ data: { [object]: found.slice(0, Number(url.searchParams.get("limit")) || found.length) } });
   };
 });
 
@@ -109,6 +139,212 @@ function input() {
 function event(callId: string, extra: Record<string, unknown> = {}) {
   return { call_control_id: "fake-call-control-id", client_state: Buffer.from(JSON.stringify({ kind: "ai_voice", callId })).toString("base64"), ...extra };
 }
+
+function assistantStart() {
+  const payload = providerCalls.find((call) => call.path.endsWith("/actions/ai_assistant_start"))!.body;
+  const assistant = payload.assistant as { instructions: string; dynamic_variables: Record<string, string> };
+  return { payload, assistant, briefing: JSON.parse(assistant.dynamic_variables.crm_context) as VoiceBriefing };
+}
+
+test("answered call receives a fresh, bounded CRM briefing, relevant history and a named greeting", async () => {
+  const personId = randomUUID();
+  const campaignId = randomUUID();
+  Object.assign(table("agencyProspects").get(contactId)!, {
+    name: "Fictional Test Company", niche: "Engineering", website: "https://example.test",
+    city: "London", email: "office@example.test", notes: "Old requirement",
+    campaignIdId: campaignId, apiKey: "raw-contact-secret",
+  });
+  refreshContact = { notes: "Automate customer enquiries. " + "x".repeat(3000) };
+  table("agencyCampaigns").set(campaignId, { id: campaignId, name: "AI discovery" });
+  table("agencyScripts").set(randomUUID(), { id: randomUUID(), campaignIdId: campaignId, scriptData: "Discuss technology support. " + "s".repeat(9000) });
+  table("agencyPeople").set(personId, {
+    id: personId, prospectId: contactId, name: "Jamie Example", jobTitle: "Director",
+    phones: { primaryPhoneNumber: "2079460456", primaryPhoneCallingCode: "44" },
+    emails: { primaryEmail: "jamie@example.test" }, avatarUrl: "private-person-attachment",
+  });
+  const unrelatedId = randomUUID();
+  table("agencyPeople").set(unrelatedId, { id: unrelatedId, prospectId: unrelatedId, name: "Unrelated person sentinel" });
+  for (let i = 0; i < 7; i++) {
+    const id = randomUUID();
+    table("notes").set(id, { id, title: `Requirement ${i}`, createdAt: `2026-10-${10 + i}T10:00:00Z`, bodyV2: { markdown: `Recorded requirement ${i}. ![diagram](https://private.example.test/signed?token=attachment-secret) ` + "n".repeat(1800) } });
+    table("noteTargets").set(id, { id, noteId: id, targetAgencyProspectId: contactId, createdAt: `2026-10-${10 + i}T10:00:00Z` });
+  }
+  table("notes").set(unrelatedId, { id: unrelatedId, title: "Unrelated note sentinel", bodyV2: { markdown: "Do not send this" } });
+  for (let i = 0; i < 5; i++) {
+    const id = randomUUID();
+    table("agencyCalls").set(id, {
+      id, agencyProspectId: contactId, createdAt: `2026-10-${10 + i}T10:00:00Z`,
+      aiSummary: `Previous discussion ${i}. ` + "h".repeat(1200), notes: "Previous notes",
+      disposition: "CALL_BACK", meetingAt: "2026-11-03T10:00:00Z", meetingStatus: "BOOKED",
+      transcript: "raw-transcript-secret", meetingManageUrl: "private-booking-secret",
+    });
+  }
+  table("agencyCalls").set(unrelatedId, { id: unrelatedId, agencyProspectId: unrelatedId, createdAt: "2026-10-28T10:00:00Z", aiSummary: "Unrelated call sentinel" });
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  const stored = table("agencyCalls").get(started.id)!;
+  assert.equal(String(stored.aiVoicePrivateState).includes("Jamie Example"), false);
+  const snapshot = decryptState<{ briefing: VoiceBriefing }>(String(stored.aiVoicePrivateState));
+  assert.match(snapshot.briefing.recordNotes!, /^Automate customer enquiries/);
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  const { payload, assistant, briefing } = assistantStart();
+  assert.equal(assistant.instructions, ASSISTANT_INSTRUCTIONS);
+  assert.match(payload.greeting as string, /AI assistant.*Jamie Example at Fictional Test Company/);
+  assert.deepEqual(briefing.contact, { name: "Jamie Example", role: "Director", email: "jamie@example.test", identity: "expected_person_unverified" });
+  assert.equal(briefing.company.industry, "Engineering");
+  assert.equal(briefing.company.city, "London");
+  assert.equal(briefing.campaign, "AI discovery");
+  assert.equal(briefing.recordNotes?.length, 2000);
+  assert.equal(briefing.linkedNotes.length, 5);
+  assert.equal(briefing.linkedNotes[0].title, "Requirement 6");
+  assert.ok(briefing.linkedNotes.every((note) => note.body.length <= 1200));
+  assert.equal(briefing.previousCalls.length, 3);
+  assert.match(briefing.previousCalls[0].summary!, /^Previous discussion 4/);
+  assert.ok(briefing.previousCalls.every((call) => call.summary!.length <= 1000));
+  assert.equal(briefing.previousCalls[0].meetingStatus, "BOOKED");
+  assert.equal(assistant.dynamic_variables.campaign_script.length, 8000);
+  assert.ok(assistant.dynamic_variables.crm_context.length < 15000);
+  const sent = JSON.stringify(payload);
+  for (const excluded of ["Unrelated", "raw-contact-secret", "raw-transcript-secret", "private-booking-secret", "attachment-secret", "private-person-attachment", "Old requirement"]) {
+    assert.equal(sent.includes(excluded), false, excluded);
+  }
+});
+
+test("lead name, company and linked person's role/email remain separate", async () => {
+  const personId = randomUUID();
+  table("agencyLeads").set(contactId, {
+    id: contactId, name: "Taylor Example", company: "Example Engineering",
+    phone: { primaryPhoneCallingCode: "44", primaryPhoneNumber: "2079460456" },
+    personId, note: "Wants to automate appointment reminders",
+  });
+  table("agencyPeople").set(personId, {
+    id: personId, name: "Taylor Example", jobTitle: "Operations manager",
+    emails: { primaryEmail: "taylor@example.test" },
+  });
+  const started = await voice.startVoiceCall({ ...input(), contactType: "lead" }, memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  const { payload, briefing } = assistantStart();
+  assert.equal(briefing.company.name, "Example Engineering");
+  assert.equal(briefing.contact.name, "Taylor Example");
+  assert.equal(briefing.contact.email, "taylor@example.test");
+  assert.equal(briefing.contact.role, "Operations manager");
+  assert.match(briefing.recordNotes!, /appointment reminders/);
+  assert.match(payload.greeting as string, /Taylor Example at Example Engineering/);
+});
+
+test("a company/shared number never turns the business name or first employee into the recipient", async () => {
+  for (const name of ["First Employee", "Second Employee"]) {
+    const id = randomUUID();
+    table("agencyPeople").set(id, { id, prospectId: contactId, name, emails: { primaryEmail: `${id}@example.test` } });
+  }
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  const { payload, briefing } = assistantStart();
+  assert.equal(briefing.contact.name, null);
+  assert.equal(briefing.contact.email, null);
+  assert.equal(briefing.contact.identity, "company_number_person_unknown");
+  assert.match(payload.greeting as string, /Have I reached Fictional Test Company/);
+  assert.doesNotMatch(payload.greeting as string, /Employee|Am I speaking with/);
+});
+
+test("CRM briefing errors block dialing and release reservations", async () => {
+  failedObject = "noteTargets";
+  await assert.rejects(voice.startVoiceCall(input(), memberId, null));
+  assert.equal(providerCalls.length, 0);
+  assert.equal(await locks.findLock("ai-voice"), null);
+  assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+});
+
+test("a changed number requires new authorisation before any provider call", async () => {
+  refreshContact = { phone: "+442079460789" };
+  await assert.rejects(voice.startVoiceCall(input(), memberId, null), /phone number changed/);
+  assert.equal(providerCalls.length, 0);
+  assert.equal(await locks.findLock("ai-voice"), null);
+});
+
+test("calls created with legacy encrypted state still answer without inventing personal details", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  table("agencyCalls").get(started.id)!.aiVoicePrivateState = encryptState({ company: "Legacy Company", script: "" });
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  const { payload, assistant } = assistantStart();
+  assert.equal(assistant.instructions, ASSISTANT_INSTRUCTIONS);
+  assert.deepEqual(JSON.parse(assistant.dynamic_variables.crm_context), { company: { name: "Legacy Company" } });
+  assert.match(payload.greeting as string, /AI assistant/);
+  assert.doesNotMatch(payload.greeting as string, /Am I speaking with/);
+});
+
+test("hangup finalizes and releases the number even when event and transcript locks are stalled", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  await locks.acquireLock(`event:${started.id}`);
+  await locks.acquireLock(`transcript:${started.id}`);
+  assert.equal(await voice.handleVoiceEvent("call.playback.ended", event(started.id)), true);
+  await voice.handleVoiceEvent("call.hangup", event(started.id, { end_time: new Date().toISOString(), hangup_cause: "normal_clearing" }));
+  assert.equal((await voice.getVoiceCall(started.id)).aiVoiceState, "ENDED");
+  assert.equal(await voice.activeVoiceCall(), null);
+  assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+});
+
+test("status polling recovers a missing hangup using exact provider end time and duration", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(started.id));
+  await locks.acquireLock(`event:${started.id}`);
+  providerStatus = { ...providerStatus, is_alive: false, end_time: "2026-10-29T14:22:04Z", call_duration: 37 };
+  assert.equal(await voice.activeVoiceCall(), null);
+  const ended = await voice.getVoiceCall(started.id);
+  assert.equal(ended.endedAt, "2026-10-29T14:22:04Z");
+  assert.equal(ended.durationSeconds, 37);
+  assert.equal(ended.status, "COMPLETED");
+  assert.equal(await voice.activeVoiceCall(), null);
+  assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+  await voice.handleVoiceEvent("call.hangup", event(started.id, { end_time: "2026-10-29T14:23:00Z" }));
+  assert.equal((await voice.getVoiceCall(started.id)).endedAt, ended.endedAt);
+});
+
+test("stop reconciles Telnyx already-ended code 90018 instead of waiting forever", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  hangupError = "90018";
+  providerStatus = { ...providerStatus, is_alive: false, end_time: new Date().toISOString() };
+  assert.equal((await voice.stopVoiceCall(await voice.getVoiceCall(started.id))).aiVoiceState, "ENDED");
+  assert.equal(await voice.activeVoiceCall(), null);
+});
+
+test("already-ended command evidence can release an expired status record without fabricating timing", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  hangupError = "90018";
+  statusFailure = 404;
+  const ended = await voice.stopVoiceCall(await voice.getVoiceCall(started.id));
+  assert.equal(ended.aiVoiceState, "ENDED");
+  assert.match(ended.aiVoiceError!, /exact end time is unavailable/);
+  assert.equal(ended.endedAt, undefined);
+  assert.equal(ended.durationSeconds, undefined);
+  assert.equal(await locks.findLock("ai-voice"), null);
+});
+
+test("live, incomplete, mismatched and unavailable provider statuses never free a reservation", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  const call = await voice.getVoiceCall(started.id);
+  assert.equal((await voice.stopVoiceCall(call)).aiVoiceState, "DIALING");
+  providerStatus = { ...providerStatus, is_alive: false };
+  assert.equal((await voice.reconcileVoiceCall(call)).aiVoiceState, "DIALING");
+  providerStatus = { call_control_id: "different-call", is_alive: false, end_time: new Date().toISOString() };
+  await assert.rejects(voice.reconcileVoiceCall(call), /valid status/);
+  statusFailure = 403;
+  await assert.rejects(voice.reconcileVoiceCall(call));
+  statusFailure = undefined;
+  hangupError = "90000";
+  await assert.rejects(voice.stopVoiceCall(call));
+  assert.ok(await locks.findLock("ai-voice"));
+  assert.ok(await locks.findLock(`phone:${phoneId}`));
+});
+
+test("an interrupted terminal cleanup is recovered on the next status reconciliation", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  table("agencyCalls").get(started.id)!.aiVoiceState = "ENDED";
+  assert.ok(await locks.findLock("ai-voice"));
+  await voice.reconcileVoiceCall(await voice.getVoiceCall(started.id));
+  assert.equal(await locks.findLock("ai-voice"), null);
+  assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+});
 
 test("one trigger produces one provider call and survives browser-independent answer, booking and hangup", async () => {
   const request = input();
@@ -212,6 +448,22 @@ test("HTTP tools reject forged or cross-call credentials; operator routes requir
     assert.equal((await fetch(`${base}/tools/meeting_details`, { method: "POST", headers, body: "{}" })).status, 200);
     const token = generateToken({ userId: "test-user" });
     assert.equal((await fetch(base, { method: "POST", headers: { Authorization: `Bearer ${token}` } })).status, 401);
+    const memberToken = generateToken({ userId: "test-user", workspaceMemberId: memberId });
+    const operatorHeaders = { Authorization: `Bearer ${memberToken}` };
+    const liveStop = await fetch(`${base}/${call.id}/stop`, { method: "POST", headers: operatorHeaders });
+    assert.equal(liveStop.status, 200);
+    const liveResult = await liveStop.json() as { stopping: boolean; call: { active: boolean } };
+    assert.equal(liveResult.stopping, true);
+    assert.equal(liveResult.call.active, true);
+    providerStatus = { ...providerStatus, is_alive: false, end_time: new Date().toISOString(), call_duration: 37 };
+    const status = await fetch(`${base}/${call.id}`, { headers: operatorHeaders });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json() as { state: string }).state, "ENDED");
+    const endedStop = await fetch(`${base}/${call.id}/stop`, { method: "POST", headers: operatorHeaders });
+    assert.equal(endedStop.status, 200);
+    const endedResult = await endedStop.json() as { stopping: boolean; call: { active: boolean } };
+    assert.equal(endedResult.stopping, false);
+    assert.equal(endedResult.call.active, false);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

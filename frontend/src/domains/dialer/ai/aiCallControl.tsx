@@ -72,9 +72,14 @@ export function AiCallControl({ contact }: { contact: Contact }) {
     if (!call) return;
     setStopping(true);
     try {
-      await api.aiCalls.stop(call.id);
-      success("End call requested", "Waiting for Telnyx to confirm the call has ended.");
+      const result = await api.aiCalls.stop(call.id);
+      queryClient.setQueryData(["ai-voice-call", call.id], result.call);
+      setLatest(result.call);
+      success(result.stopping ? "End call requested" : "AI call ended", result.stopping
+        ? "Telnyx is still reporting a live call. Its status will refresh automatically."
+        : "Telnyx confirmed the call ended. The number has been released.");
       await queryClient.invalidateQueries({ queryKey: ["ai-voice-call", call.id] });
+      await refresh();
     } catch (error) {
       toastError("Could not end AI call", describeError(error).detail);
     } finally {

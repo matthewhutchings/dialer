@@ -7,6 +7,7 @@ export interface AgencyLead {
   id: string;
   name?: string;
   contactName?: string;
+  personId?: string | null;
   email?: string | {
     primaryEmail?: string;
     additionalEmails?: unknown[];

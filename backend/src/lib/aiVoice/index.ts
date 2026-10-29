@@ -1,5 +1,6 @@
 import type { AiCallInput, AiCallView } from "@dialer/shared";
 import { callResultMachine } from "@dialer/shared";
+import { APIError } from "telnyx";
 import { getTwenty, createTwenty, listTwenty, listTwentyAll, updateTwenty } from "../twenty/client/index.js";
 import type { WriteActor } from "../twenty/actor/index.js";
 import { telnyxClient } from "../telnyx/index.js";
@@ -10,13 +11,14 @@ import type { AgencyPhone } from "../../routes/twenty/phones/types.js";
 import { isClaimStale } from "../../routes/twenty/phones/helpers/index.js";
 import { acquireLock, findLock, releaseOwnedLock, withVoiceLock } from "./locks.js";
 import { availableSlots, bookMeeting, meetingDetails, type BookingInput, type BookingState } from "./booking.js";
-import { callToken, configurationError, decryptState, encryptState, ukNumber, UUID, VoiceError, voiceConfig } from "./config.js";
+import { callToken, configurationError, decryptState, encryptState, UUID, VoiceError, voiceConfig } from "./config.js";
 import { forgetLastCalls } from "../twenty/lastCall/index.js";
 import { createLogger } from "../logger/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../ai/analysis/index.js";
 import { createFollowUpTasks } from "../ai/analysis/followUpTasks.js";
 import { splitStatus } from "../../routes/calls/helpers/index.js";
-import { realPhone } from "../../routes/prospects/helpers/placeholders.js";
+import { contactNumber, loadVoiceContext, voiceGreeting, type VoiceBriefing } from "./context.js";
+import { ASSISTANT_INSTRUCTIONS } from "./assistant.js";
 
 const log = createLogger("ai-voice");
 const GLOBAL_LOCK = "ai-voice";
@@ -25,6 +27,7 @@ const ACTIVE_STATES = new Set(["STARTING", "DIALING", "ACTIVE", "UNKNOWN"]);
 interface PrivateState extends BookingState {
   company: string;
   script: string;
+  briefing?: VoiceBriefing;
 }
 
 export interface VoiceCall extends AgencyCall {
@@ -61,7 +64,8 @@ export async function activeVoiceCall(): Promise<AiCallView | null> {
   if (!lock) return null;
   const call = await findRequest(lock.owner);
   if (!call) throw new VoiceError(409, "An AI call is starting or requires operator recovery. Check Telnyx before releasing its reservation.");
-  return callView(call);
+  const view = callView(await reconcileVoiceCall(call));
+  return view.active ? view : null;
 }
 
 export async function getVoiceCall(id: string): Promise<VoiceCall> {
@@ -84,25 +88,13 @@ export function ensureCallable(contact: { coldCallStatus?: unknown; status?: unk
   }
 }
 
-async function contactContext(input: AiCallInput): Promise<{ number: string; company: string; script: string }> {
+async function callableContact(input: AiCallInput): Promise<AgencyProspect | AgencyLead> {
   const prospect = input.contactType === "prospect";
   const contact = prospect
     ? await getTwenty<AgencyProspect>("agencyProspects", input.contactId)
     : await getTwenty<AgencyLead>("agencyLeads", input.contactId);
   ensureCallable(contact);
-  const rawPhone = contact.phone;
-  const phoneText = typeof rawPhone === "string" ? rawPhone :
-    `${rawPhone?.primaryPhoneCallingCode || ""}${rawPhone?.primaryPhoneNumber || ""}`;
-  const number = ukNumber(realPhone(phoneText) || "");
-  const company = ("company" in contact && typeof contact.company === "string" ? contact.company : contact.name) || "the company";
-  let script = "";
-  if (contact.campaignIdId && UUID.test(contact.campaignIdId)) {
-    const scripts = await listTwenty<{ scriptData?: string }>("agencyScripts", {
-      limit: 1, filter: `campaignIdId[eq]:"${contact.campaignIdId}"`,
-    });
-    script = scripts[0]?.scriptData?.slice(0, 8000) || "";
-  }
-  return { number, company: company.slice(0, 200), script };
+  return contact;
 }
 
 export function validateCallInput(input: AiCallInput): void {
@@ -132,9 +124,9 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
     }
     return view;
   }
-  const context = await contactContext(input);
+  const number = contactNumber(await callableContact(input));
   const config = voiceConfig();
-  if (input.permission === "internal_test" && !config.testNumbers.includes(context.number)) {
+  if (input.permission === "internal_test" && !config.testNumbers.includes(number)) {
     throw new VoiceError(403, "This number is not on the server's AI_VOICE_TEST_NUMBERS allowlist.");
   }
   const phones = await listTwentyAll<AgencyPhone>("agencyPhones");
@@ -149,7 +141,9 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
     if (freshPhone.claimedByMemberId && !isClaimStale(freshPhone)) {
       throw new VoiceError(409, "The agency number is currently held by a human dialer.");
     }
-    await contactContext(input);
+    const contact = await callableContact(input);
+    if (contactNumber(contact) !== number) throw new VoiceError(409, "The contact's phone number changed. Review the record and authorise a new call.");
+    const context = await loadVoiceContext(input, contact);
     call = await createTwenty<VoiceCall>("agencyCalls", {
       name: `AI OUTBOUND ${context.company}`,
       direction: "OUTBOUND",
@@ -164,7 +158,7 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
       aiVoiceRequestId: input.requestId,
       aiVoicePermission: input.permission,
       aiVoiceConsentEvidence: `${new Date().toISOString()} | ${memberId} | ${input.consentEvidence.trim()}`,
-      aiVoicePrivateState: encryptState({ company: context.company, script: context.script }),
+      aiVoicePrivateState: encryptState({ company: context.company, script: context.script, briefing: context.briefing }),
     }, actor);
     // Both the client state and command ID survive retries and early provider webhooks.
     const clientState = Buffer.from(JSON.stringify({ kind: "ai_voice", callId: call.id })).toString("base64");
@@ -172,7 +166,7 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
     const response = await telnyxClient().calls.dial({
       connection_id: config.appId,
       from: config.caller,
-      to: context.number,
+      to: number,
       command_id: input.requestId,
       client_state: clientState,
       timeout_secs: 30,
@@ -206,11 +200,72 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
   }
 }
 
-export async function stopVoiceCall(call: VoiceCall): Promise<void> {
-  if (!callView(call).active) return;
+async function finishVoiceCall(
+  call: VoiceCall, ccid: string, endTime?: string, cause = "", duration?: number,
+): Promise<VoiceCall> {
+  const current = await getVoiceCall(call.id);
+  if (current.aiVoiceState === "ENDED") {
+    await releaseCallLocks(current);
+    return current;
+  }
+  const endedAt = endTime && Number.isFinite(Date.parse(endTime)) ? endTime : null;
+  const status = current.aiVoiceAnsweredAt ? "COMPLETED" : cause === "user_busy" ? "BUSY" : cause === "no_answer" || cause === "timeout" ? "NO_ANSWER" : "FAILED";
+  const durationSeconds = typeof duration === "number" && Number.isFinite(duration) && duration >= 0
+    ? Math.round(duration)
+    : endedAt && current.aiVoiceAnsweredAt ? Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(current.aiVoiceAnsweredAt)) / 1000)) : undefined;
+  const updated = await updateTwenty<VoiceCall>("agencyCalls", call.id, {
+    telnyxCallId: ccid, status, aiVoiceState: "ENDED",
+    ...(endedAt ? { endedAt } : {}),
+    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+    aiVoiceError: endedAt ? "" : "Telnyx confirms this call ended, but its exact end time is unavailable.",
+  });
+  await releaseCallLocks(current);
+  forgetLastCalls();
+  return updated;
+}
+
+export async function reconcileVoiceCall(call: VoiceCall): Promise<VoiceCall> {
+  if (!callView(call).active) {
+    if (call.aiVoiceState === "ENDED") await releaseCallLocks(call);
+    return call;
+  }
+  if (!call.telnyxCallId) return call;
+  const status = (await telnyxClient().calls.retrieveStatus(call.telnyxCallId)).data;
+  if (!status || status.call_control_id !== call.telnyxCallId || typeof status.is_alive !== "boolean") {
+    throw new VoiceError(502, "Telnyx did not return a valid status for this call. Its reservation is retained.");
+  }
+  // An asynchronous dial can report is_alive=false; require positive end evidence.
+  if (status.is_alive === false && status.end_time && Number.isFinite(Date.parse(status.end_time))) {
+    log.info(`Reconciling ended Telnyx call ${call.id}`);
+    return finishVoiceCall(call, call.telnyxCallId, status.end_time, "", status.call_duration);
+  }
+  return call;
+}
+
+function providerSaysEnded(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 422) return false;
+  const body: unknown = error.error;
+  return !!body && typeof body === "object" && "errors" in body && Array.isArray(body.errors) &&
+    body.errors.some((item: unknown) => !!item && typeof item === "object" && "code" in item && item.code === "90018");
+}
+
+export async function stopVoiceCall(call: VoiceCall): Promise<VoiceCall> {
+  if (!callView(call).active) return reconcileVoiceCall(call);
   if (!call.telnyxCallId) throw new VoiceError(409, "Telnyx has not supplied a call ID yet. Wait for the webhook; do not start another call.");
-  await telnyxClient().calls.actions.hangup(call.telnyxCallId, { command_id: `ai-stop-${call.id}` });
-  // The hangup webhook finalizes the record and releases the durable reservations.
+  try {
+    await telnyxClient().calls.actions.hangup(call.telnyxCallId, { command_id: `ai-stop-${call.id}` });
+  } catch (error) {
+    if (!providerSaysEnded(error)) throw error;
+    log.info(`Telnyx rejected stop because call ${call.id} already ended`);
+    try {
+      return await reconcileVoiceCall(call);
+    } catch (statusError) {
+      if (!(statusError instanceof APIError) || statusError.status !== 404) throw statusError;
+      log.warn(`Ended call ${call.id} is outside Telnyx status retention; exact end time unavailable`);
+      return finishVoiceCall(call, call.telnyxCallId);
+    }
+  }
+  return reconcileVoiceCall(await getVoiceCall(call.id));
 }
 
 export async function runVoiceTool(callId: string, tool: string, input: Record<string, unknown>): Promise<unknown> {
@@ -291,20 +346,16 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
   // Existing recording handlers remain the owner of recording/transcription events.
   if (event.startsWith("call.recording.")) return false;
   const callId = state.callId;
-  return withVoiceLock(`event:${callId}`, async () => {
+  const transcriptEvent = event === "call.ai_gather.message_history_updated" || event === "call.conversation.ended";
+  if (!["call.hangup", "call.initiated", "call.answered"].includes(event) && !transcriptEvent) return true;
+  const handle = async () => {
     const call = await getVoiceCall(callId);
     const ccid = typeof payload.call_control_id === "string" ? payload.call_control_id : "";
     if (!ccid || (call.telnyxCallId && call.telnyxCallId !== ccid)) throw new VoiceError(409, "AI event call ID does not match.");
     if (event === "call.hangup") {
       const cause = typeof payload.hangup_cause === "string" ? payload.hangup_cause : "";
-      const status = call.aiVoiceAnsweredAt ? "COMPLETED" : cause === "user_busy" ? "BUSY" : cause === "no_answer" || cause === "timeout" ? "NO_ANSWER" : "FAILED";
       const endedAt = typeof payload.end_time === "string" && Number.isFinite(Date.parse(payload.end_time)) ? payload.end_time : new Date().toISOString();
-      await updateTwenty("agencyCalls", call.id, {
-        telnyxCallId: ccid, status, aiVoiceState: "ENDED", endedAt,
-        durationSeconds: call.aiVoiceAnsweredAt ? Math.max(0, Math.round((Date.parse(endedAt) - Date.parse(call.aiVoiceAnsweredAt)) / 1000)) : 0,
-      });
-      await releaseCallLocks(call);
-      forgetLastCalls();
+      await finishVoiceCall(call, ccid, endedAt, cause);
       return true;
     }
     if (event === "call.ai_gather.message_history_updated" || event === "call.conversation.ended") {
@@ -338,13 +389,15 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
         await telnyxClient().calls.actions.startAIAssistant(ccid, {
           assistant: {
             id: voiceConfig().assistantId,
+            instructions: ASSISTANT_INSTRUCTIONS,
             dynamic_variables: {
               call_id: call.id, tool_token: callToken(call.id),
               company_name: privateState.company, campaign_script: privateState.script,
+              crm_context: JSON.stringify(privateState.briefing || { company: { name: privateState.company } }),
               current_time: new Date().toISOString(),
             },
           },
-          greeting: "Hi, I'm an AI assistant calling on behalf of Matthew at Fewzen about AI and technology support. Is now an okay time for a quick conversation?",
+          greeting: voiceGreeting(privateState.briefing),
           command_id: `ai-start-${call.id}`,
           send_message_history_updates: true,
         });
@@ -356,5 +409,8 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
       }
     }
     return true;
-  });
+  };
+  // Terminal writes are idempotent and must not wait behind a stalled transcript/AI operation.
+  if (event === "call.hangup") return handle();
+  return withVoiceLock(`${transcriptEvent ? "transcript" : "event"}:${callId}`, handle);
 }
