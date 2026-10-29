@@ -1,6 +1,6 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { assistantConfiguration } from "./assistant.js";
+import { assistantConfiguration, inboundAssistantConfiguration, INBOUND_INSTRUCTIONS } from "./assistant.js";
 import { callToken, decryptState, encryptState, setupToken, ukNumber, validCallToken, validSetupToken } from "./config.js";
 import { ensureCallable, validateCallInput } from "./index.js";
 
@@ -8,6 +8,17 @@ const originalSecret = process.env.AI_VOICE_SECRET;
 afterEach(() => {
   if (originalSecret === undefined) delete process.env.AI_VOICE_SECRET;
   else process.env.AI_VOICE_SECRET = originalSecret;
+});
+
+test("inbound assistant offers guarded reception tools without outbound sales or opt-out actions", () => {
+  const definition = inboundAssistantConfiguration("https://dialer.example.test");
+  assert.equal(definition.instructions, INBOUND_INSTRUCTIONS);
+  const tools = definition.tools?.flatMap((tool) => tool.type === "webhook" ? [tool.webhook.name] : []);
+  assert.deepEqual(tools, ["meeting_details", "availability", "book", "end", "transfer_status", "connect_matthew", "leave_message"]);
+  const transfer = definition.tools?.find((tool) => tool.type === "webhook" && tool.webhook.name === "connect_matthew");
+  assert.ok(transfer?.type === "webhook");
+  assert.deepEqual(transfer.webhook.body_parameters?.required, ["confirmed"]);
+  assert.equal("destination" in (transfer.webhook.body_parameters?.properties || {}), false);
 });
 
 test("tool credentials are scoped to one call and encrypted state rejects tampering", () => {

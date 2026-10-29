@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
-import { assistantConfiguration, ASSISTANT_NAME } from "./src/lib/aiVoice/assistant.js";
+import { assistantConfiguration, ASSISTANT_NAME, inboundAssistantConfiguration, INBOUND_ASSISTANT_NAME } from "./src/lib/aiVoice/assistant.js";
 import { telnyxClient } from "./src/lib/telnyx/index.js";
 import { setupVoiceSchema } from "./src/lib/aiVoice/schema.js";
 import { setupToken } from "./src/lib/aiVoice/config.js";
@@ -33,7 +33,10 @@ async function main() {
   }
   const base = process.env.AI_VOICE_PUBLIC_URL;
   if (!base) throw new Error("Set AI_VOICE_PUBLIC_URL to the deployed backend HTTPS origin.");
-  const definition = assistantConfiguration(base);
+  const inbound = process.argv.includes("--inbound");
+  const name = inbound ? INBOUND_ASSISTANT_NAME : ASSISTANT_NAME;
+  const envKey = inbound ? "TELNYX_INBOUND_AI_ASSISTANT_ID" : "TELNYX_AI_ASSISTANT_ID";
+  const definition = inbound ? inboundAssistantConfiguration(base) : assistantConfiguration(base);
   if (!process.argv.includes("--apply")) {
     console.log(JSON.stringify(definition, null, 2));
     console.log("Dry run only. Use --apply to provision the assistant. No calls are placed.");
@@ -54,19 +57,19 @@ async function main() {
     throw new Error("Call Control webhook does not match the deployed AI backend. Update it explicitly before provisioning; this script never repoints existing human calling.");
   }
   const assistants = await client.ai.assistants.list();
-  const candidates = assistants.data.filter((assistant) => assistant.name === ASSISTANT_NAME);
-  const configuredId = process.env.TELNYX_AI_ASSISTANT_ID;
-  if (!configuredId && candidates.length > 1) throw new Error("Multiple Fewzen assistants found. Set TELNYX_AI_ASSISTANT_ID explicitly.");
+  const candidates = assistants.data.filter((assistant) => assistant.name === name);
+  const configuredId = process.env[envKey];
+  if (!configuredId && candidates.length > 1) throw new Error(`Multiple Fewzen assistants found. Set ${envKey} explicitly.`);
   const id = configuredId || candidates[0]?.id;
   const assistant = id
     ? await client.ai.assistants.update(id, definition)
     : await client.ai.assistants.create(definition);
   const verified = await client.ai.assistants.retrieve(assistant.id);
-  if (verified.name !== ASSISTANT_NAME || verified.instructions !== definition.instructions) {
+  if (verified.name !== name || verified.instructions !== definition.instructions) {
     throw new Error("Assistant read-back verification failed.");
   }
   console.log(`Assistant ${id ? "updated" : "created"} and verified.`);
-  console.log(`TELNYX_AI_ASSISTANT_ID=${assistant.id}`);
+  console.log(`${envKey}=${assistant.id}`);
   console.log("No numbers reassigned and no phone calls placed. Deploy the backend and schema before enabling AI_VOICE_ENABLED.");
 }
 

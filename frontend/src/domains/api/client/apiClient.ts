@@ -44,6 +44,7 @@ export interface InboundRoutingSettings {
 export interface InboundRoutingConfig extends InboundRoutingSettings {
   inboundNumber: string;
   browserAvailable: boolean;
+  aiReceptionistEnabled?: boolean;
 }
 
 export interface CallerMatch {

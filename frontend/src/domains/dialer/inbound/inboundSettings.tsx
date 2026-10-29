@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type InboundRoutingConfig } from "@/domains/api/client/apiClient";
+import { api, type InboundRoutingConfig } from "@/domains/api/client";
 import { useDialer } from "@/domains/dialer/provider";
 import { Button } from "@/domains/ui/button";
 import { inputClass } from "@/domains/ui/input";
@@ -49,11 +49,12 @@ function RoutingForm({ config }: { config: InboundRoutingConfig }) {
       }
     }}>
       <p className="text-[13px] text-[var(--ods-text-secondary)]">
-        Shared routing for {config.inboundNumber}. Calls ring online browsers. Only when
-        none are online do they go to this mobile. Saving changes affects the whole workspace.
+        {config.aiReceptionistEnabled
+          ? `AI reception answers ${config.inboundNumber} first. This private mobile is used only when a caller requests Matthew during UK business hours. Saving changes affects the whole workspace.`
+          : `Shared routing for ${config.inboundNumber}. Calls ring online browsers. Only when none are online do they go to this mobile. Saving changes affects the whole workspace.`}
       </p>
       <label className="block text-[13px] font-medium">
-        Fallback mobile
+        {config.aiReceptionistEnabled ? "Matthew's private transfer mobile" : "Fallback mobile"}
         <input required type="tel" pattern="\+[1-9][0-9]{6,14}" className={`${inputClass} mt-1 w-full`}
           value={fallbackPhone} onChange={(e) => { setFallbackPhone(e.target.value); setSaved(false); }}
           placeholder="+447700900123" />
@@ -78,6 +79,14 @@ export function InboundSettings() {
   return (
     <section className="space-y-4">
       <h3 className="text-[15px] font-semibold">Inbound calls</h3>
+      {query.data?.aiReceptionistEnabled && (
+        <p role="status" className="text-[13px] text-[var(--ods-text-secondary)]">
+          AI reception is enabled: callers can chat, book a free meeting, leave a CRM message,
+          or request Matthew Monday to Friday, 9 am to 5 pm UK time, excluding England and Wales
+          bank holidays. Matthew must press 1 to accept; unanswered calls return to the AI.
+          Browser online/offline does not bypass the AI receptionist.
+        </p>
+      )}
       <p className="text-[13px] text-[var(--ods-text-secondary)]">
         Start offline after signing in. Go online to receive calls in this browser,
         even if outbound audio uses Call me or Dial in. Going offline does not end an active call.

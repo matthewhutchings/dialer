@@ -64,6 +64,9 @@ TELNYX_AI_ASSISTANT_ID=
 # Optional; unset model uses Telnyx's default.
 TELNYX_AI_MODEL=
 TELNYX_AI_VOICE=Telnyx.KokoroTTS.af_heart
+# Inbound reception is independently enabled after provisioning.
+AI_VOICE_INBOUND_ENABLED=false
+TELNYX_INBOUND_AI_ASSISTANT_ID=
 ```
 
 Generate the dedicated secret with `openssl rand -hex 32`. Retain it securely:
@@ -83,6 +86,9 @@ bun run ai:voice:setup --schema --remote --apply
 
 # Create/update the named assistant and read it back to verify.
 bun run ai:voice:setup --apply
+
+# Separate inbound receptionist; never overwrite the outbound sales assistant.
+bun run ai:voice:setup --inbound --apply
 
 # Offline checks: fictional contacts and mocked provider/calendar HTTP.
 bun run test:ai-voice
@@ -236,6 +242,55 @@ unrecoverable stop failure. If its status record has expired (404), that explici
 already-ended evidence can release the reservation, with an operator-visible
 warning that the exact end time is unavailable; timing is not invented.
 Other errors remain explicit and preserve reservations.
+
+### Inbound AI receptionist
+
+Set `TELNYX_INBOUND_AI_ASSISTANT_ID` to the ID returned by
+`ai:voice:setup --inbound --apply`, then deploy with
+`AI_VOICE_INBOUND_ENABLED=true`. This changes **new calls to
+`TELNYX_INBOUND_NUMBER`** from browser-first/mobile-fallback to AI-first.
+Outbound permission gates and phone-audio dial-in/PIN flows are unchanged.
+Set the flag to `false` and redeploy to restore the previous inbound flow;
+events for already-running AI calls and transfer legs still finish normally.
+
+The AI identifies itself, explains Fewzen's AI/automation/technology work and
+lets the caller chat, book a free discovery meeting, leave a message or request
+Matthew. It does not infer a caller's identity or disclose CRM data from caller
+ID. Calls, transcripts, bookings and messages persist in Twenty under the
+shared named AI reporting identity, without creating human login accounts.
+An incoming caller does not grant permission for subsequent AI marketing calls.
+
+The receptionist uses the same genuine booking slots, Europe/London defaults,
+am/pm speech, booking idempotency and spoken confirmation-before-hangup as
+outbound calls. A calendar preload failure is logged and shown on the call;
+reception still answers, but booking needs a fresh calendar check.
+
+Messages require an agreed caller name, return contact and message summary.
+They are saved in call notes and a dedicated linked **Reply to Fewzen inbound
+message** task, verified before the AI reports success. Stable per-call task
+and link IDs make retries safe even when the response to a create is lost.
+They do not send SMS/email notifications or promise a response time.
+
+Live handoff uses only the existing private fallback mobile configured under
+**Settings -> Inbound Calls**. The backend checks Monday-Friday **9 am
+inclusive to 5 pm exclusive, Europe/London**, including BST/GMT. England and
+Wales bank holidays come from the public
+[GOV.UK bank holiday feed](https://www.gov.uk/bank-holidays.json), cached for
+up to 24 hours. Unavailable, invalid, expired or uncovered-year holiday data
+fails closed for transfers; the caller can still chat, leave a message or book.
+
+With the caller's agreement, the AI stops and hold audio plays while Matthew's
+mobile rings for up to 20 seconds. Matthew hears a private **press 1 to accept**
+prompt, with a 10-second response window. The caller is bridged only after
+acceptance and another business-hours check. Voicemail cannot accept the call.
+Busy, decline, no answer, screening timeout and Matthew ending the connected
+leg return the caller to the AI for a message or booking. An uncertain dial
+does not launch a replacement; late legs are cleaned up. Caller hangup closes
+the mobile leg. The mobile number never appears in model tool arguments.
+
+Settings shows whether AI reception is enabled. Browser online/offline status
+does not bypass reception while AI-first routing is on. The inbound flag is
+independent of `AI_VOICE_ENABLED`, which gates outbound calls.
 
 An uncertain dial without a provider call ID deliberately keeps its reservation:
 do not automatically expire it or launch another call. Inspect the call in Telnyx,

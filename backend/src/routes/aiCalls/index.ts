@@ -11,6 +11,7 @@ import { listTwentyAll } from "../../lib/twenty/client/index.js";
 import type { AgencyPhone } from "../twenty/phones/types.js";
 import { meetingDetails } from "../../lib/aiVoice/booking.js";
 import { readAgentProfile, saveAgentProfile } from "../../lib/aiVoice/profile.js";
+import { runInboundTool } from "../../lib/aiVoice/inbound.js";
 
 const router = Router();
 const log = createLogger("ai-calls");
@@ -65,7 +66,10 @@ router.post("/tools/:tool", async (req, res) => {
       res.status(401).json({ error: "Invalid AI tool credentials." });
       return;
     }
-    res.json(await runVoiceTool(callId, String(req.params.tool), req.body || {}));
+    const tool = String(req.params.tool);
+    res.json(await (["transfer_status", "connect_matthew", "leave_message"].includes(tool)
+      ? runInboundTool(callId, tool, req.body || {})
+      : runVoiceTool(callId, tool, req.body || {})));
   } catch (error) {
     failure(res, error);
   }

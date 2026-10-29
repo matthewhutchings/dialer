@@ -25,6 +25,7 @@ const { callToken, setupToken, decryptState, encryptState } = await import("./co
 const { ASSISTANT_INSTRUCTIONS } = await import("./assistant.js");
 const { readAgentProfile, saveAgentProfile } = await import("./profile.js");
 const { mapCall } = await import("../../routes/calls/helpers/mapCall.js");
+const inbound = await import("./inbound.js");
 type VoiceBriefing = import("./context.js").VoiceBriefing;
 const { generateToken } = await import("../../middleware/auth.js");
 const { default: router } = await import("../../routes/aiCalls/index.js");
@@ -46,6 +47,8 @@ let hangupError: string | undefined;
 let bookingGate: Promise<void> | undefined;
 let speakFails: boolean;
 let calendarFails: boolean;
+let uncertainTransfer: boolean;
+let lostTaskResponse: boolean;
 
 function table(name: string): Map<string, Row> {
   let value = data.get(name);
@@ -67,6 +70,13 @@ beforeEach(() => {
   bookingGate = undefined;
   speakFails = false;
   calendarFails = false;
+  uncertainTransfer = false;
+  lostTaskResponse = false;
+  process.env.AI_VOICE_INBOUND_ENABLED = "false";
+  process.env.TELNYX_INBOUND_AI_ASSISTANT_ID = "test-inbound-assistant";
+  process.env.TELNYX_INBOUND_NUMBER = process.env.AGENCY_PHONE_NUMBER;
+  process.env.TELNYX_FALLBACK_PHONE = "+447700900123";
+  process.env.TELNYX_HOLD_AUDIO_URL = "https://dialer.example.test/hold.mp3";
   table("agencyProspects").set(contactId, { id: contactId, name: "Fictional Test Company", phone: "+442079460456", coldCallStatus: "NEW" });
   table("agencyPhones").set(phoneId, { id: phoneId, phoneNumber: process.env.AGENCY_PHONE_NUMBER, state: "ACTIVE" });
   globalThis.fetch = async (request, init) => {
@@ -77,6 +87,9 @@ beforeEach(() => {
       if ((!init?.method || init.method === "GET") && url.pathname === "/v2/calls/fake-call-control-id") {
         return statusFailure ? Response.json({ errors: [{ code: "test-status-error" }] }, { status: statusFailure }) : Response.json({ data: providerStatus });
       }
+      if ((!init?.method || init.method === "GET") && url.pathname.startsWith("/v2/calls/")) {
+        return Response.json({ data: { ...providerStatus, call_control_id: decodeURIComponent(url.pathname.slice("/v2/calls/".length)) } });
+      }
       providerCalls.push({ path: url.pathname, body });
       if (url.pathname.endsWith("/actions/speak") && speakFails) {
         return Response.json({ errors: [{ code: "test-speech-error" }] }, { status: 422 });
@@ -84,8 +97,11 @@ beforeEach(() => {
       if (url.pathname.endsWith("/actions/hangup") && hangupError) {
         return Response.json({ errors: [{ code: hangupError, title: "Test provider rejection" }] }, { status: 422 });
       }
-      return Response.json({ data: url.pathname === "/v2/calls" && !uncertainDial ? { call_control_id: "fake-call-control-id" } : {} });
+      const transfer = url.pathname === "/v2/calls" && body.to === process.env.TELNYX_FALLBACK_PHONE;
+      return Response.json({ data: url.pathname === "/v2/calls" && !uncertainDial && !(transfer && uncertainTransfer)
+        ? { call_control_id: transfer ? "transfer-leg-id" : "fake-call-control-id" } : {} });
     }
+    if (url.hostname === "www.gov.uk") return Response.json({ "england-and-wales": { events: [{ date: "2026-12-25" }, { date: "2026-12-28" }, { date: "2027-01-01" }] } });
     if (url.hostname === "booking.fewzen.ai") {
       if (calendarFails) return Response.json({ error: "calendar unavailable" }, { status: 503 });
       if (url.pathname === "/api/event") return Response.json({ connected: true, durationMinutes: 30, timezone: "Europe/London", minNoticeHours: 4, maxDaysAhead: 60 });
@@ -115,8 +131,12 @@ beforeEach(() => {
       if (object === "agencyVoiceLocks" && [...rows.values()].some((row) => row.lockKey && row.lockKey === body.lockKey)) {
         return Response.json({ error: "unique constraint" }, { status: 409 });
       }
-      const row = { ...body, id: randomUUID() };
+      const row = { ...body, id: typeof body.id === "string" ? body.id : randomUUID() };
       rows.set(row.id, row);
+      if (object === "tasks" && lostTaskResponse) {
+        lostTaskResponse = false;
+        return Response.json({ error: "Task saved but response lost" }, { status: 503 });
+      }
       return Response.json({ data: row }, { status: 201 });
     }
     if (init?.method === "PATCH") {
@@ -600,4 +620,182 @@ test("pre-call calendar failures are explicit, prevent dialing and release reser
   assert.equal(providerCalls.length, 0);
   assert.equal(await locks.findLock("ai-voice"), null);
   assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+});
+
+async function incoming() {
+  process.env.AI_VOICE_INBOUND_ENABLED = "true";
+  const payload = { call_control_id: "incoming-provider-id", direction: "incoming", from: "+447700900999", to: process.env.TELNYX_INBOUND_NUMBER };
+  await inbound.handleInboundVoiceEvent("call.initiated", payload);
+  const call = [...table("agencyCalls").values()][0];
+  const answered = { ...payload, client_state: Buffer.from(JSON.stringify({ kind: "ai_voice", callId: call.id })).toString("base64") };
+  await voice.handleVoiceEvent("call.answered", answered);
+  return { call: await voice.getVoiceCall(call.id), payload, answered };
+}
+
+function transferEvent(eventType: string, extra: Record<string, unknown> = {}) {
+  const dial = providerCalls.filter((call) => call.path === "/v2/calls" && call.body.to === process.env.TELNYX_FALLBACK_PHONE).at(-1)!;
+  return inbound.handleInboundVoiceEvent(eventType, { call_control_id: "transfer-leg-id", client_state: dial.body.client_state, ...extra });
+}
+
+test("inbound routing is opt-in and answers one AI call without taking outbound number reservations", async () => {
+  const payload = { call_control_id: "incoming-provider-id", direction: "incoming", from: "anonymous", to: process.env.TELNYX_INBOUND_NUMBER };
+  assert.equal(await inbound.handleInboundVoiceEvent("call.initiated", payload), false);
+  const { call, payload: first, answered } = await incoming();
+  await inbound.handleInboundVoiceEvent("call.initiated", first);
+  await voice.handleVoiceEvent("call.answered", answered);
+  assert.equal(table("agencyCalls").size, 1);
+  assert.equal(call.direction, "INBOUND");
+  assert.equal(call.aiVoicePermission, "inbound_requested");
+  assert.equal(await locks.findLock("ai-voice"), null);
+  assert.equal(await locks.findLock(`phone:${phoneId}`), null);
+  const starts = providerCalls.filter((call) => call.path.endsWith("/actions/ai_assistant_start"));
+  assert.equal(starts.length, 1);
+  assert.equal((starts[0].body.assistant as { id: string }).id, "test-inbound-assistant");
+  assert.match(String(starts[0].body.greeting), /reached Fewzen.*AI assistant.*leave Matthew a message/);
+  assert.equal(providerCalls.some((call) => call.path === "/v2/calls"), false);
+  assert.equal(await inbound.handleInboundVoiceEvent("call.initiated", { ...first, to: "+442079469999" }), false);
+});
+
+test("inbound reception remains available with an explicit warning when calendar preload fails", async () => {
+  calendarFails = true;
+  const { call } = await incoming();
+  assert.equal(call.aiVoiceState, "ACTIVE");
+  assert.match(call.aiVoiceError!, /without calendar preload/);
+  assert.equal(assistantStart().assistant.dynamic_variables.calendar_context, "null");
+});
+
+test("inbound messages need consent, persist on the call and create exactly one linked task", async () => {
+  const { call } = await incoming();
+  const message = { name: "Test Caller", company: "Example", contact: "caller@example.test", message: "Please discuss automating our invoicing.", confirmed: true };
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", { ...message, confirmed: false }), /agree/);
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", { ...message, contact: "" }), /contact/);
+  assert.deepEqual(await inbound.runInboundTool(call.id, "leave_message", message), { messageSaved: true, followUpCreated: true });
+  await inbound.runInboundTool(call.id, "leave_message", message);
+  assert.equal(table("tasks").size, 1);
+  assert.equal(table("taskTargets").size, 1);
+  assert.match((await voice.getVoiceCall(call.id)).notes!, /Test Caller.*Example[\s\S]*caller@example.test[\s\S]*invoicing/);
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", { ...message, message: "Replacement" }), /already been saved/);
+});
+
+test("message task failures are explicit and retry the original saved message", async () => {
+  const { call } = await incoming();
+  const message = { name: "Test Caller", contact: "+447700900999", message: "Please call back.", confirmed: true };
+  failedObject = "tasks";
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", message));
+  assert.match((await voice.getVoiceCall(call.id)).notes!, /Please call back/);
+  failedObject = undefined;
+  await inbound.runInboundTool(call.id, "leave_message", message);
+  assert.equal(table("tasks").size, 1);
+});
+
+test("lost task responses recover without duplicates or reusing an unrelated analysis task", async () => {
+  const { call } = await incoming();
+  const oldTask = randomUUID();
+  table("tasks").set(oldTask, { id: oldTask, title: "Unrelated analysis task" });
+  table("taskTargets").set("old-target", { id: "old-target", taskId: oldTask, targetAgencyCallId: call.id });
+  const message = { name: "Test Caller", contact: "caller@example.test", message: "Please discuss AI.", confirmed: true };
+  lostTaskResponse = true;
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", message));
+  assert.equal(table("tasks").size, 2);
+  failedObject = "taskTargets";
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", message));
+  assert.equal(table("tasks").size, 2);
+  failedObject = undefined;
+  await inbound.runInboundTool(call.id, "leave_message", message);
+  assert.equal(table("tasks").size, 2);
+  assert.equal(table("taskTargets").size, 2);
+});
+
+test("outbound conversations cannot invoke inbound message or handoff tools", async () => {
+  const call = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(call.id));
+  await assert.rejects(inbound.runInboundTool(call.id, "transfer_status", {}), /inbound AI conversation/);
+  await assert.rejects(inbound.runInboundTool(call.id, "leave_message", {}), /inbound AI conversation/);
+});
+
+test("live handoff is denied outside hours, on holidays and without caller agreement", async (t) => {
+  const { call } = await incoming();
+  await assert.rejects(inbound.runInboundTool(call.id, "connect_matthew", {}), /agree/);
+  for (const date of ["2026-10-29T17:00:00Z", "2026-10-31T12:00:00Z", "2026-12-25T10:00:00Z"]) {
+    const clock = t.mock.method(Date, "now", () => Date.parse(date));
+    const result = await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true }) as { connecting: boolean; open: boolean };
+    assert.equal(result.connecting, false);
+    assert.equal(result.open, false);
+    clock.mock.restore();
+  }
+  assert.equal(providerCalls.some((call) => call.path === "/v2/calls"), false);
+});
+
+test("handoff dials only the private configured number and bridges only after Matthew presses 1", async (t) => {
+  const { call } = await incoming();
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T10:00:00Z"));
+  assert.equal((await inbound.runInboundTool(call.id, "transfer_status", {}) as { open: boolean }).open, true);
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true, destination: "+12025550123" });
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true });
+  const dials = providerCalls.filter((call) => call.path === "/v2/calls");
+  assert.equal(dials.length, 1);
+  assert.equal(dials[0].body.to, process.env.TELNYX_FALLBACK_PHONE);
+  assert.equal("bridge_on_answer" in dials[0].body, false);
+  await transferEvent("call.answered");
+  assert.equal(providerCalls.some((call) => call.path.endsWith("/actions/bridge")), false);
+  assert.match(String(providerCalls.find((call) => call.path.endsWith("/actions/gather_using_speak"))!.body.payload), /Press 1/);
+  await transferEvent("call.gather.ended", { digits: "1" });
+  assert.equal(providerCalls.filter((call) => call.path.endsWith("/actions/bridge")).length, 1);
+  await transferEvent("call.gather.ended", { digits: "1" });
+  assert.equal(providerCalls.filter((call) => call.path.endsWith("/actions/bridge")).length, 1);
+  process.env.AI_VOICE_INBOUND_ENABLED = "false";
+  await transferEvent("call.hangup");
+  const resumed = providerCalls.filter((call) => call.path.endsWith("/actions/ai_assistant_start")).at(-1)!;
+  assert.match(String(resumed.body.greeting), /take a message.*book a meeting/);
+  assert.equal((await voice.getVoiceCall(call.id)).aiVoiceState, "ACTIVE");
+});
+
+test("voicemail, declined and unanswered mobile legs return the caller to AI without bridging", async (t) => {
+  const { call } = await incoming();
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T10:00:00Z"));
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true });
+  await transferEvent("call.answered");
+  await transferEvent("call.gather.ended", { digits: "" });
+  assert.equal(providerCalls.some((call) => call.path.endsWith("/actions/bridge")), false);
+  assert.equal(providerCalls.filter((call) => call.path.endsWith("/actions/ai_assistant_start")).length, 2);
+  await transferEvent("call.hangup");
+  assert.equal(providerCalls.filter((call) => call.path.endsWith("/actions/ai_assistant_start")).length, 2);
+  const before = providerCalls.length;
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true });
+  await transferEvent("call.hangup");
+  assert.ok(providerCalls.slice(before).some((call) => call.path.endsWith("/actions/ai_assistant_start")));
+});
+
+test("late acceptance after 5 pm cannot bridge and uncertain transfers cannot redial", async (t) => {
+  const { call } = await incoming();
+  const clock = t.mock.method(Date, "now", () => Date.parse("2026-10-29T16:59:00Z"));
+  uncertainTransfer = true;
+  await assert.rejects(inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true }), /uncertain/);
+  await assert.rejects(inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true }), /uncertain/);
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+  await transferEvent("call.answered");
+  assert.ok(providerCalls.some((call) => call.path.endsWith("/actions/hangup")));
+  assert.equal(providerCalls.some((call) => call.path.endsWith("/actions/bridge")), false);
+  await transferEvent("call.hangup");
+  uncertainTransfer = false;
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true });
+  clock.mock.restore();
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T17:00:00Z"));
+  const dial = providerCalls.filter((call) => call.path === "/v2/calls").at(-1)!;
+  const payload = { call_control_id: "transfer-leg-id", client_state: dial.body.client_state };
+  await inbound.handleInboundVoiceEvent("call.answered", payload);
+  await inbound.handleInboundVoiceEvent("call.gather.ended", { ...payload, digits: "1" });
+  assert.equal(providerCalls.some((call) => call.path.endsWith("/actions/bridge")), false);
+});
+
+test("caller hangup terminates a ringing mobile leg and releases the AI call", async (t) => {
+  const { call, answered } = await incoming();
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T10:00:00Z"));
+  await inbound.runInboundTool(call.id, "connect_matthew", { confirmed: true });
+  await inbound.handleInboundVoiceEvent("call.hangup", answered);
+  await voice.handleVoiceEvent("call.hangup", { ...answered, end_time: new Date().toISOString() });
+  assert.ok(providerCalls.some((call) => call.path === "/v2/calls/transfer-leg-id/actions/hangup"));
+  assert.equal((await voice.getVoiceCall(call.id)).aiVoiceState, "ENDED");
+  await transferEvent("call.answered");
+  assert.equal(providerCalls.some((call) => call.path.endsWith("/actions/bridge")), false);
 });

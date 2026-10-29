@@ -7,6 +7,7 @@ import { bridgeConfig, telnyxBridgeCalls } from "../../lib/audioBridge/telnyx.js
 import { SESSION_TTL_MS, SIP_PRESENCE_TTL_MS, digitsOnly, generatePin, isExpired, isLive, sipPresenceMemberId, type AudioSession } from "../../lib/audioBridge/index.js";
 import { readInboundSettings, saveInboundSettings, validateInboundSettings } from "../../lib/audioBridge/inboundSettings.js";
 import { resolveActor } from "../../lib/twenty/actor/index.js";
+import { inboundAiEnabled } from "../../lib/aiVoice/inbound.js";
 
 /**
  * Phone audio for the dialer (Settings -> Audio Source: "Call me" / "Dial in").
@@ -28,6 +29,7 @@ router.get("/inbound-config", async (_req, res) => {
       ...settings,
       inboundNumber: config.inboundNumber,
       browserAvailable: !!config.appId && !!config.agentSipUri && !!config.inboundNumber,
+      aiReceptionistEnabled: inboundAiEnabled(),
     });
   } catch (err: any) {
     log.error(`inbound settings read failed: ${err?.message}`);

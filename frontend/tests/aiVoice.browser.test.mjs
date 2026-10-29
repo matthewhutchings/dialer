@@ -49,6 +49,10 @@ test("AI controls preserve permission and named AI reports stay separate from th
     };
     if (path === "/api/prospects/facets") body = { total: 0, type: {}, status: {}, country: {}, industry: {}, campaign: {} };
     if (path === "/api/audio-sessions/config") body = { callMeAvailable: false, dialInAvailable: false };
+    if (path === "/api/audio-sessions/inbound-config") body = {
+      inboundNumber: "+442079460123", fallbackPhone: "+447700900123",
+      holdAudioUrl: "https://example.test/hold.mp3", browserAvailable: true, aiReceptionistEnabled: true,
+    };
     if (path === "/api/ai-calls/config") body = { enabled: true, ready: true, reason: null, activeCall };
     if (path === "/api/ai-calls/profile") {
       if (request.method() === "PUT") agentName = request.postDataJSON().name;
@@ -115,5 +119,8 @@ test("AI controls preserve permission and named AI reports stay separate from th
   assert.equal(await humanRow.getByRole("cell").nth(1).innerText(), "1");
   assert.equal(await aiRow.getByRole("cell").last().innerText(), "1");
   assert.equal(await humanRow.getByRole("cell").last().innerText(), "0");
+  await page.goto(`http://127.0.0.1:${address.port}/settings?tab=inbound`);
+  await page.getByText(/AI reception is enabled: callers can chat/).waitFor();
+  await page.getByLabel("Matthew's private transfer mobile", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
 });

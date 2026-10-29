@@ -11,6 +11,7 @@ import { readInboundSettings } from "../../../lib/audioBridge/inboundSettings.js
 import { decodeState, digitsOnly } from "../../../lib/audioBridge/index.js";
 import { handleMessageEvent } from "../../messages/events.js";
 import { handleVoiceEvent } from "../../../lib/aiVoice/index.js";
+import { handleInboundVoiceEvent } from "../../../lib/aiVoice/inbound.js";
 
 const log = createLogger('telnyx-webhook');
 
@@ -193,7 +194,7 @@ router.post(["/telnyx", "/"], async (req, res) => {
 
   try {
     let result = "ignored";
-    if (await handleVoiceEvent(eventType, payload)) {
+    if (await handleInboundVoiceEvent(eventType, payload) || await handleVoiceEvent(eventType, payload)) {
       res.status(200).json({ ok: true, event: eventType, result: "AI call updated" });
       return;
     }

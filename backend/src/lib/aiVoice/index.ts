@@ -18,19 +18,21 @@ import { analyzeCallTranscript, isAiConfigured } from "../ai/analysis/index.js";
 import { createFollowUpTasks } from "../ai/analysis/followUpTasks.js";
 import { splitStatus } from "../../routes/calls/helpers/index.js";
 import { contactNumber, loadVoiceContext, voiceGreeting, type VoiceBriefing } from "./context.js";
-import { ASSISTANT_INSTRUCTIONS } from "./assistant.js";
+import { ASSISTANT_INSTRUCTIONS, INBOUND_GREETING, INBOUND_INSTRUCTIONS } from "./assistant.js";
 
 const log = createLogger("ai-voice");
 const GLOBAL_LOCK = "ai-voice";
 const ACTIVE_STATES = new Set(["STARTING", "DIALING", "ACTIVE", "UNKNOWN"]);
 
-interface PrivateState extends BookingState {
+export interface PrivateState extends BookingState {
   company: string;
   script: string;
   briefing?: VoiceBriefing;
   availabilityTimezone?: string;
   bookingCloseQueued?: boolean;
   calendar?: CalendarBriefing;
+  message?: { name: string; company?: string; contact: string; message: string };
+  transfer?: { id: string; legId?: string; status: "dialing" | "screening" | "connected" | "returned" | "uncertain"; returnedAt?: string };
 }
 
 export interface VoiceCall extends AgencyCall {
@@ -245,7 +247,7 @@ export async function reconcileVoiceCall(call: VoiceCall): Promise<VoiceCall> {
   return call;
 }
 
-function providerSaysEnded(error: unknown): boolean {
+export function providerSaysEnded(error: unknown): boolean {
   if (!(error instanceof APIError) || error.status !== 422) return false;
   const body: unknown = error.error;
   return !!body && typeof body === "object" && "errors" in body && Array.isArray(body.errors) &&
@@ -269,6 +271,31 @@ export async function stopVoiceCall(call: VoiceCall): Promise<VoiceCall> {
     }
   }
   return reconcileVoiceCall(await getVoiceCall(call.id));
+}
+
+export async function startVoiceAssistant(call: VoiceCall, greeting?: string, commandId = `ai-start-${call.id}`): Promise<void> {
+  if (!call.telnyxCallId) throw new VoiceError(409, "The voice call has no provider call ID.");
+  const state = decryptState<PrivateState>(call.aiVoicePrivateState);
+  const inbound = call.direction === "INBOUND";
+  const id = inbound ? process.env.TELNYX_INBOUND_AI_ASSISTANT_ID?.trim() : voiceConfig().assistantId;
+  if (!id) throw new VoiceError(503, "The requested voice assistant is not configured.");
+  await telnyxClient().calls.actions.startAIAssistant(call.telnyxCallId, {
+    assistant: {
+      id, instructions: inbound ? INBOUND_INSTRUCTIONS : ASSISTANT_INSTRUCTIONS,
+      dynamic_variables: {
+        call_id: call.id, tool_token: callToken(call.id), company_name: state.company,
+        campaign_script: state.script, crm_context: JSON.stringify(state.briefing || { company: { name: state.company } }),
+        calendar_context: JSON.stringify(state.calendar || null), current_time: new Date().toISOString(),
+        inbound_context: JSON.stringify(inbound ? {
+          transcript: call.transcript?.slice(-8000) || "",
+          savedMessage: state.message || null,
+          confirmedMeeting: state.attempt?.result ? { start: state.attempt.result.start, end: state.attempt.result.end } : null,
+        } : null),
+      },
+    },
+    greeting: greeting ?? (inbound ? INBOUND_GREETING : voiceGreeting(state.briefing)),
+    command_id: commandId, send_message_history_updates: true,
+  });
 }
 
 export async function runVoiceTool(callId: string, tool: string, input: Record<string, unknown>): Promise<unknown> {
@@ -411,7 +438,7 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
       }).join("\n").slice(0, 60_000);
       if (transcript) await updateTwenty("agencyCalls", call.id, { transcript, transcriptionStatus: "READY" });
       if (event === "call.conversation.ended" && transcript.length >= 10 && isAiConfigured()) {
-        const analysis = await analyzeCallTranscript(transcript, { direction: "OUTBOUND", durationSeconds: call.durationSeconds });
+        const analysis = await analyzeCallTranscript(transcript, { direction: call.direction || "OUTBOUND", durationSeconds: call.durationSeconds });
         await updateTwenty("agencyCalls", call.id, {
           summary: analysis.summary, aiSummary: analysis.summary, aiSentiment: analysis.sentiment,
           aiScore: analysis.score, aiKeyPoints: JSON.stringify(analysis.keyPoints),
@@ -425,26 +452,11 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
     if (event === "call.initiated") {
       await updateTwenty("agencyCalls", call.id, { telnyxCallId: ccid });
     } else if (event === "call.answered") {
-      const privateState = decryptState<PrivateState>(call.aiVoicePrivateState);
       const answeredAt = call.aiVoiceAnsweredAt || new Date().toISOString();
-      await updateTwenty("agencyCalls", call.id, { telnyxCallId: ccid, aiVoiceState: "ACTIVE", aiVoiceAnsweredAt: answeredAt, aiVoiceError: "" });
+      if (call.aiVoiceAnsweredAt) return true;
+      const active = await updateTwenty<VoiceCall>("agencyCalls", call.id, { telnyxCallId: ccid, aiVoiceState: "ACTIVE", aiVoiceAnsweredAt: answeredAt });
       try {
-        await telnyxClient().calls.actions.startAIAssistant(ccid, {
-          assistant: {
-            id: voiceConfig().assistantId,
-            instructions: ASSISTANT_INSTRUCTIONS,
-            dynamic_variables: {
-              call_id: call.id, tool_token: callToken(call.id),
-              company_name: privateState.company, campaign_script: privateState.script,
-              crm_context: JSON.stringify(privateState.briefing || { company: { name: privateState.company } }),
-              calendar_context: JSON.stringify(privateState.calendar || null),
-              current_time: new Date().toISOString(),
-            },
-          },
-          greeting: voiceGreeting(privateState.briefing),
-          command_id: `ai-start-${call.id}`,
-          send_message_history_updates: true,
-        });
+        await startVoiceAssistant(active);
       } catch (error) {
         log.error("AI assistant start failed; ending the call", error instanceof Error ? error.message : "provider error");
         await updateTwenty("agencyCalls", call.id, { aiVoiceError: "The voice assistant could not start. Ending the call." });
