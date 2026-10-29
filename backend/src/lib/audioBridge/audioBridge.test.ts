@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeState, encodeState, generatePin, handleBridgeEvent, handleIncomingCall, type AudioSession, type BridgeDeps } from "./index.js";
+import { decodeState, encodeState, generatePin, handleBridgeEvent, handleIncomingCall, type AudioSession, type BridgeDeps, type IncomingCallDeps, type BridgeState } from "./index.js";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
 
@@ -153,6 +153,39 @@ test("inbound call rings the configured SIP destination when an agent is online"
     },
   );
   assert.deepEqual(dialed, [{ kind: "inbound", sessionId: "in-2", target: "sip:agent@example.com" }]);
+});
+
+test("original caller survives answer state and is forwarded only to browser SIP legs", async () => {
+  for (const online of [true, false]) {
+    let answerState: BridgeState | undefined;
+    const dialed: Parameters<IncomingCallDeps["calls"]["dial"]>[0][] = [];
+    const config = {
+      inboundNumber: "+441234567890",
+      fallbackPhone: "+447700900456",
+      agentSipUri: "sip:agent@example.com",
+      holdAudioUrl: "https://dialer.example.com/holding.mp3",
+    };
+    const deps: IncomingCallDeps = {
+      store: { list: async () => online ? [session({ mode: "sip_presence", status: "ready" })] : [] },
+      calls: {
+        answer: async (_id, state) => { answerState = state; },
+        playback: async () => {},
+        stopPlayback: async () => {},
+        dial: async (params) => { dialed.push(params); return "out"; },
+      },
+      now: () => NOW,
+    };
+    await handleIncomingCall("call.initiated", {
+      call_control_id: "caller", direction: "incoming", from: "+447700900123", to: config.inboundNumber,
+    }, config, deps);
+    assert.ok(answerState);
+    assert.equal(answerState.callerNumber, "+447700900123");
+    await handleIncomingCall("call.answered", {
+      call_control_id: "caller", client_state: encodeState(answerState),
+    }, config, deps);
+    assert.equal(dialed[0].from, config.inboundNumber);
+    assert.equal(dialed[0].callerNumber, online ? "+447700900123" : undefined);
+  }
 });
 
 test("stale SIP presence does not suppress mobile fallback", async () => {

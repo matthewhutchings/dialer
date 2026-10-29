@@ -15,6 +15,7 @@ import { attachRemoteMedia, getMicStream, loadSip, sendSessionDtmf, startAgent, 
 import { pickCallLine } from "@/domains/dialer/route";
 import { startRingtone, stopRingtone } from "@/domains/dialer/audio";
 import { showCallNotification, dismissCallNotification, requestNotificationPermission } from "@/domains/dialer/notifications";
+import { incomingCaller } from "@/domains/dialer/sip/incomingCaller";
 
 /** Explicit opt-in only (?simulate=1): simulated calls never happen silently. */
 export const SIMULATE_CALLS =
@@ -337,9 +338,7 @@ export function DialerProvider({ children }: { children: ReactNode }) {
       try { session.reject({ statusCode: 486 }); } catch { /* gone */ }
       return;
     }
-    const identity = session.remoteIdentity;
-    const number = identity?.uri?.user ?? "Unknown";
-    setIncoming({ session, number, name: identity?.displayName || number });
+    setIncoming({ session, ...incomingCaller(session) });
     setIsOpen(true);
     session.stateChange.addListener((s: string) => {
       if (s === "Terminated") setIncoming((cur) => (cur?.session === session ? null : cur));

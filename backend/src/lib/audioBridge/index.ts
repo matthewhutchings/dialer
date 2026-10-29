@@ -43,6 +43,7 @@ export interface BridgeState {
   sessionId?: string;
   tries?: number;
   target?: string;
+  callerNumber?: string;
 }
 
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -121,6 +122,7 @@ export interface IncomingCallDeps {
       linkTo: string;
       timeoutSecs: number;
       commandId?: string;
+      callerNumber?: string;
     }): Promise<string>;
   };
   now(): Date;
@@ -165,6 +167,9 @@ export async function handleIncomingCall(
       linkTo: state.sessionId,
       timeoutSecs: 45,
       commandId: `inbound-dial-${state.sessionId}`,
+      ...(/^sips?:/i.test(state.target) && state.callerNumber
+        ? { callerNumber: state.callerNumber }
+        : {}),
     });
     return `incoming call ${state.sessionId} playing hold audio while destination rings (outbound ${outboundCallId})`;
   }
@@ -194,6 +199,9 @@ export async function handleIncomingCall(
     kind: "inbound",
     sessionId: ccid,
     target: to,
+    ...(typeof payload?.from === "string" && /^\+[1-9]\d{6,14}$/.test(payload.from)
+      ? { callerNumber: payload.from }
+      : {}),
   }, `inbound-answer-${ccid}`);
   return `incoming call ${ccid} answered; preparing ${hasOnlineAgent ? "online agent" : "mobile fallback"} route`;
 }

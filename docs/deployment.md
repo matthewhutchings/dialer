@@ -142,3 +142,8 @@ ID and bridges to the caller when the destination answers. While it rings, the
 66-second MP3 plays on repeat for the caller and stops when the destination
 answers. This applies only to inbound calls to `TELNYX_INBOUND_NUMBER`; it does
 not fall back just because a registered agent misses the call.
+
+Browser SIP legs carry the original caller number in the
+`X-Dialer-Original-Caller` header so the incoming-call UI and call log identify
+the caller, not the business number used for the bridge. Mobile fallback legs
+continue to present the business number as caller ID.
