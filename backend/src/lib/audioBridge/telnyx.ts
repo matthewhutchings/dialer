@@ -19,6 +19,15 @@ export function bridgeConfig() {
 
 const VOICE = { voice: "female", language: "en-US" as const };
 
+export function inboundCallerHeaders(params: { to: string; state: BridgeState; callerNumber?: string }) {
+  if (params.state.kind !== "inbound_agent" || !/^sips?:/i.test(params.to)) return [];
+  return [{
+    name: "X-Dialer-Original-Caller",
+    value: params.callerNumber && /^\+[1-9]\d{6,14}$/.test(params.callerNumber)
+      ? params.callerNumber : "anonymous",
+  }];
+}
+
 export const telnyxBridgeCalls = {
   async answer(callControlId: string, state: BridgeState) {
     await telnyxClient().calls.actions.answer(callControlId, { client_state: encodeState(state) });
@@ -53,6 +62,7 @@ export const telnyxBridgeCalls = {
     timeoutSecs?: number;
   }): Promise<string> {
     const { appId } = bridgeConfig();
+    const customHeaders = inboundCallerHeaders(params);
     const res = await telnyxClient().calls.dial({
       connection_id: appId,
       to: params.to,
@@ -60,10 +70,7 @@ export const telnyxBridgeCalls = {
       client_state: encodeState(params.state),
       timeout_secs: params.timeoutSecs ?? 30,
       ...(params.commandId ? { command_id: params.commandId } : {}),
-      ...(params.state.kind === "inbound" && /^sips?:/i.test(params.to)
-        ? { custom_headers: [{ name: "X-Dialer-Original-Caller",
-            value: params.callerNumber && /^\+[1-9]\d{6,14}$/.test(params.callerNumber) ? params.callerNumber : "anonymous" }] }
-        : {}),
+      ...(customHeaders.length ? { custom_headers: customHeaders } : {}),
       ...(params.linkTo
         ? { link_to: params.linkTo, bridge_on_answer: true, park_after_unbridge: "self" }
         : {}),
