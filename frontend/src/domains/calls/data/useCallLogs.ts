@@ -70,6 +70,7 @@ export interface AgencyCallRecord {
   agencyProspectId: string | null;
   agencyLeadId: string | null;
   createdBy: { name?: string; source?: string } | null;
+  isAiVoice: boolean;
   created_at: string;
   updated_at: string;
 }

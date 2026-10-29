@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   bucketsFor, dispositionBreakdown, filterCalls, healthFor, isConnected, isConversation,
   memberGrid, numberHealth, rangeFor, totalsFor, type ReportCall,
+  agentOf, teamStats,
 } from "./reports";
 
 const call = (over: Partial<ReportCall>): ReportCall => ({
@@ -79,4 +80,28 @@ test("disposition breakdown lists WAVV dispositions first with shares", () => {
   const rows = dispositionBreakdown([call({ status: "NO_ANSWER" }), call({}), call({}), call({ status: "BUSY" })]);
   assert.deepEqual(rows.map((r) => r.label), ["Interested", "No Answer", "Busy"]);
   assert.equal(rows[0].share, 0.5);
+});
+
+test("AI calls use a named reporting identity instead of the triggering human across reports", () => {
+  const calls = [
+    call({ createdBy: { name: "Scout" }, durationSeconds: 120 }),
+    call({ createdBy: { name: "Scout" }, isAiVoice: true, aiAgentName: "Scout", status: "APPOINTMENT_SET", durationSeconds: 180 }),
+    call({ createdBy: { name: "Another human" }, isAiVoice: true, aiAgentName: "Scout", status: "NO_ANSWER", durationSeconds: 20 }),
+  ];
+  assert.equal(agentOf(calls[0]), "Scout");
+  assert.equal(agentOf(calls[1]), "Scout (AI)");
+  const rows = teamStats(calls, 60);
+  assert.equal(rows.length, 2);
+  const ai = rows.find((row) => row.member === "Scout (AI)")!;
+  assert.equal(ai.outbound, 2);
+  assert.equal(ai.conversations, 1);
+  assert.equal(ai.appointments, 1);
+  assert.equal(ai.outboundMinutes, 3);
+  const range = rangeFor("last7", new Date(2026, 5, 7, 12));
+  assert.equal(filterCalls(calls, range, "Scout").length, 1);
+  assert.equal(filterCalls(calls, range, "Scout (AI)").length, 2);
+  assert.equal(memberGrid(calls, bucketsFor(range), () => true).find((row) => row.member === "Scout (AI)")!.total, 2);
+  const renamed = calls.map((item) => item.isAiVoice ? { ...item, aiAgentName: "Discovery" } : item);
+  assert.equal(teamStats(renamed, 60).find((row) => row.member === "Discovery (AI)")!.outbound, 2);
+  assert.equal(totalsFor(calls, 60).outbound, totalsFor(renamed, 60).outbound);
 });

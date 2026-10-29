@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createTwenty, deleteTwenty, listTwenty, updateTwenty } from "../twenty/client/index.js";
+import { createTwenty, listTwenty, updateTwenty } from "../twenty/client/index.js";
 import { VoiceError } from "./config.js";
 import { readLiveSchema } from "../twenty/schema/applySchema.js";
 
@@ -41,9 +41,8 @@ export async function acquireLock(key: string, owner: string = randomUUID()): Pr
 }
 
 export async function releaseLock(lock: VoiceLock): Promise<void> {
-  // Twenty soft-deletes records; clear the unique value before deleting.
+  // Retain a released audit row: concurrent cleanup can safely clear it again.
   await updateTwenty("agencyVoiceLocks", lock.id, { lockKey: null });
-  await deleteTwenty("agencyVoiceLocks", lock.id);
 }
 
 export async function releaseOwnedLock(key: string, owner: string): Promise<void> {

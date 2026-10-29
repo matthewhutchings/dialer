@@ -148,7 +148,8 @@ and [booking guide](https://booking.fewzen.ai/AGENTS.md); publishing `llms.txt`
 alone does not install these tools.
 
 Availability is live, not a reservation. The prospect must confirm their name,
-email, IANA timezone and selected returned slot. A random 32-byte booking
+email and selected returned slot in UK time (or a timezone they correct).
+A random 32-byte booking
 idempotency key and the original payload are encrypted and persisted before
 booking. Timeouts and unknown outcomes reuse the same key and payload; only an
 explicit unavailable-slot response permits a newly agreed slot and new key.
@@ -160,6 +161,50 @@ This first version does not expose rescheduling to the voice agent.
 The booking service documents 10 creation requests per client per 15 minutes.
 Rate-limit errors are reported and must not be interpreted as bookings.
 
+Calendar metadata reads do not take the booking write lock. Mutating tools remain
+serialized; a timed-out booking must not be replaced while its original request
+is running. Tool callbacks allow 60 seconds and calendar/booking tools give a
+brief spoken progress update after four seconds. Availability requires the
+prospect's IANA timezone, defaulting to **Europe/London** for UK calls without
+asking a timezone question. If the person volunteers another timezone, use it;
+changing a timezone used in a fresh availability check requires checking again.
+
+Before dialing, the backend fetches meeting details and live availability from
+now until next Monday midnight in Europe/London (including BST/GMT changes).
+The encrypted call state and assistant briefing retain those exact slots and
+12-hour spoken labels. The agent can offer this week's times immediately,
+without another calendar lookup. Next week, another requested period, an empty
+week or an unavailable slot triggers a fresh check. Pre-call calendar failures
+prevent dialing and release reservations rather than start an unprepared call.
+Preloaded availability is not a reservation: the booking service still checks
+the chosen slot when creating the meeting.
+
+Spoken offers use **10 am**, **2 pm** or **10:30 am**, not 24-hour times or
+whole-hour `:00`. Tool payloads retain exact ISO timestamps. UK calls use
+Europe/London so daylight saving is applied automatically.
+
+After a successful booking, the assistant calls `end`. The backend stops the AI
+assistant and speaks the persisted booking date, time and attendee timezone.
+Only the matching `call.speak.ended` webhook requests hangup, so confirmation is
+not cut off by an immediate end command. Speech failures are explicit and retain
+the booking; repeating `end` uses the same provider command IDs. An operator can
+still end the call immediately. Never interpret queued speech as proof it was heard.
+
+### Named AI agent in team reports
+
+Open **Settings -> Reports -> AI agent** to save a team-wide display name.
+This reporting-only identity does not create a workspace login or change the
+spoken introduction. The name is stored in Twenty on the configured agency
+caller phone; saving adds only the `agencyPhone.aiAgentName` field if needed.
+Until named, it is displayed as **Fewzen AI (AI)**.
+
+Calls carrying an AI voice request ID, including existing calls, are reported
+under this identity rather than the human who triggered them. Human
+`createdByMemberId`/`createdBy` attribution remains intact for audit. Renaming
+regroups the same AI calls under the new name, without rewriting history or
+splitting the agent's metrics. The member filter, charts, daily grids and Team
+Performance use the same grouping and conversation threshold as human calls.
+
 ### Call lifecycle and recovery
 
 Calls persist before dialing and continue without an open browser. Maximum
@@ -167,6 +212,9 @@ ring time is 30 seconds; maximum call time is 600 seconds. Database-unique
 reservations in `agencyVoiceLocks` coordinate AI calls with human number
 claim/state/heartbeat/release operations while AI calling is enabled. Startup
 checks the required unique constraints instead of relying on process memory.
+Releasing a lock clears its unique `lockKey` and retains the row for audit.
+Concurrent cleanup can repeat that update safely; it does not race a second
+soft-delete or release a newer owner's reservation.
 
 Provider answer events start the assistant; hangup events finalize the call and
 release reservations without waiting for transcript/event processing locks.

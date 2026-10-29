@@ -162,6 +162,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   aiCalls: {
+    profile: () => request<AiAgentProfile>("/api/ai-calls/profile"),
+    saveProfile: (profile: AiAgentProfile) => request<AiAgentProfile>("/api/ai-calls/profile", { method: "PUT", body: JSON.stringify(profile) }),
     config: () => request<AiVoiceConfigView>("/api/ai-calls/config"),
     start: (input: AiCallInput) => request<AiCallView>("/api/ai-calls", { method: "POST", body: JSON.stringify(input) }),
     get: (id: string) => request<AiCallView>(`/api/ai-calls/${id}`),
@@ -459,4 +461,4 @@ export const api = {
       ),
   },
 };
-import type { AiCallInput, AiCallView, AiVoiceConfigView } from "@dialer/shared";
+import type { AiAgentProfile, AiCallInput, AiCallView, AiVoiceConfigView } from "@dialer/shared";

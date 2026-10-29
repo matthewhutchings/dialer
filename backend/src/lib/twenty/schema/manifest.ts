@@ -271,6 +271,7 @@ export const SCHEMA_OBJECTS: SchemaObject[] = [
       { name: "features", type: "RAW_JSON", label: "Features", description: "Telnyx features object: { sms: true, mms: false, ... }" },
       { name: "health", type: "RAW_JSON", label: "Health", description: "Telnyx health object: { message_success_rate, ... }" },
       { name: "inboundRouting", type: "RAW_JSON", label: "Inbound Routing", description: "Shared inbound fallbackPhone and holdAudioUrl; deployment defaults apply until saved in the app." },
+      { name: "aiAgentName", type: "TEXT", label: "AI Agent Name", description: "Shared reporting-only AI identity. Does not create a workspace login or change who triggered a call." },
       { name: "lastHeartbeatAt", type: "DATE_TIME", label: "Last Heartbeat At" },
       { name: "lastSyncedAt", type: "TEXT", label: "Last Synced At", description: "ISO timestamp of last Telnyx sync" },
       { name: "messagingProfileId", type: "TEXT", label: "Messaging Profile ID", description: "Telnyx messaging profile UUID" },

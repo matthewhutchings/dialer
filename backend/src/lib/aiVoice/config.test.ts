@@ -59,13 +59,22 @@ test("assistant tools keep per-call credentials outside model arguments", () => 
   for (const tool of definition.tools || []) {
     assert.equal(tool.type, "webhook");
     if (tool.type !== "webhook") continue;
+    assert.equal(tool.timeout_ms, 60_000);
     assert.equal(tool.webhook.method, "POST");
     assert.deepEqual(tool.webhook.headers, [
       { name: "Authorization", value: "Bearer {{tool_token}}" },
       { name: "X-AI-Call-Id", value: "{{call_id}}" },
     ]);
     assert.equal("tool_token" in (tool.webhook.body_parameters?.properties || {}), false);
+    if (["meeting_details", "availability", "book"].includes(tool.webhook.name)) {
+      assert.equal(tool.webhook.messages?.[0].type, "request_response_delayed");
+      assert.equal(tool.webhook.messages?.[0].timing_ms, 4000);
+    }
+    if (tool.webhook.name === "availability") {
+      assert.equal(tool.webhook.body_parameters?.required?.includes("timezone"), false);
+    }
   }
+  assert.equal(definition.telephony_settings?.user_idle_reply_secs, 20);
   assert.throws(() => assistantConfiguration("http://dialer.example.test"), /HTTPS/);
   assert.throws(() => assistantConfiguration("https://dialer.example.test/path"), /origin/);
 });

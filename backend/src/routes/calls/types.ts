@@ -39,6 +39,7 @@ export interface AgencyCall {
   agencyLeadId?: string;
   /** WorkspaceMember UUID responsible for the call (our attribution, server-derived). */
   createdByMemberId?: string;
+  aiVoiceRequestId?: string;
   createdBy?: unknown;
   createdAt?: string;
   updatedAt?: string;

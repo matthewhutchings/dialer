@@ -1,5 +1,9 @@
 export type AiCallPermission = "internal_test" | "consented";
 
+export interface AiAgentProfile {
+  name: string;
+}
+
 export interface AiCallInput {
   requestId: string;
   contactId: string;

@@ -27,6 +27,8 @@ import {
 import { useCalls } from "@/domains/calls/data";
 import { usePersistedState } from "@/domains/app/persistedState";
 import { useReportSettings } from "@/domains/reports/data";
+import { useAiAgentProfile } from "@/domains/reports/data";
+import { describeError } from "@/domains/feedback/describeError";
 import { SelectMenu } from "@/domains/ui/menu";
 import { SectionTitle } from "@/domains/ui/sectionTitle";
 import { BarChart } from "@/domains/reports/parts";
@@ -95,7 +97,11 @@ export function ReportsPage() {
   const [member, setMember] = usePersistedState<string>("reports-member", ENTIRE_TEAM);
 
   const range = useMemo(() => rangeFor(preset), [preset]);
-  const allCalls = (calls ?? []) as ReportCall[];
+  const hasAiCalls = (calls ?? []).some((call) => call.isAiVoice);
+  const profile = useAiAgentProfile(hasAiCalls);
+  const allCalls: ReportCall[] = useMemo(() => (calls ?? []).map((call) => ({
+    ...call, aiAgentName: profile.data?.name,
+  })), [calls, profile.data?.name]);
   const members = useMemo(() => [...new Set(allCalls.map(agentOf))].sort(), [allCalls]);
   const selectedMember = member !== ENTIRE_TEAM && members.includes(member) ? member : null;
   const scoped = useMemo(() => filterCalls(allCalls, range, selectedMember), [allCalls, range, selectedMember]);
@@ -144,6 +150,9 @@ export function ReportsPage() {
       </div>
 
       <div className="p-5 space-y-4">
+        {hasAiCalls && profile.error && <p role="alert" className="text-[13px] text-red-600">
+          Could not load the AI agent name: {describeError(profile.error).detail} AI calls remain grouped separately.
+        </p>}
         {isLoading ? (
           <ReportsBodySkeleton tab={tab} />
         ) : tab === "overview" ? (

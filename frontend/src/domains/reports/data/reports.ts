@@ -21,6 +21,8 @@ export interface ReportCall {
   startedAt: string | null;
   created_at: string;
   createdBy: { name?: string } | null;
+  isAiVoice?: boolean;
+  aiAgentName?: string;
 }
 
 export type RangePreset = "today" | "yesterday" | "last7" | "last30" | "thisMonth" | "lastMonth";
@@ -97,6 +99,7 @@ export function isConversation(call: ReportCall, thresholdSeconds: number): bool
 }
 
 export function agentOf(call: ReportCall): string {
+  if (call.isAiVoice) return `${call.aiAgentName?.trim() || "AI agent"} (AI)`;
   return call.createdBy?.name?.trim() || "Unknown";
 }
 

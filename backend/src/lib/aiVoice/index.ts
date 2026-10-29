@@ -10,7 +10,7 @@ import type { AgencyProspect } from "../../routes/prospects/types.js";
 import type { AgencyPhone } from "../../routes/twenty/phones/types.js";
 import { isClaimStale } from "../../routes/twenty/phones/helpers/index.js";
 import { acquireLock, findLock, releaseOwnedLock, withVoiceLock } from "./locks.js";
-import { availableSlots, bookMeeting, meetingDetails, type BookingInput, type BookingState } from "./booking.js";
+import { availableSlots, bookMeeting, meetingDetails, preloadCalendar, spokenMeetingTime, validTimezone, type BookingInput, type BookingState, type CalendarBriefing } from "./booking.js";
 import { callToken, configurationError, decryptState, encryptState, UUID, VoiceError, voiceConfig } from "./config.js";
 import { forgetLastCalls } from "../twenty/lastCall/index.js";
 import { createLogger } from "../logger/index.js";
@@ -28,6 +28,9 @@ interface PrivateState extends BookingState {
   company: string;
   script: string;
   briefing?: VoiceBriefing;
+  availabilityTimezone?: string;
+  bookingCloseQueued?: boolean;
+  calendar?: CalendarBriefing;
 }
 
 export interface VoiceCall extends AgencyCall {
@@ -143,7 +146,7 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
     }
     const contact = await callableContact(input);
     if (contactNumber(contact) !== number) throw new VoiceError(409, "The contact's phone number changed. Review the record and authorise a new call.");
-    const context = await loadVoiceContext(input, contact);
+    const [context, calendar] = await Promise.all([loadVoiceContext(input, contact), preloadCalendar()]);
     call = await createTwenty<VoiceCall>("agencyCalls", {
       name: `AI OUTBOUND ${context.company}`,
       direction: "OUTBOUND",
@@ -158,7 +161,7 @@ export async function startVoiceCall(input: AiCallInput, memberId: string, actor
       aiVoiceRequestId: input.requestId,
       aiVoicePermission: input.permission,
       aiVoiceConsentEvidence: `${new Date().toISOString()} | ${memberId} | ${input.consentEvidence.trim()}`,
-      aiVoicePrivateState: encryptState({ company: context.company, script: context.script, briefing: context.briefing }),
+      aiVoicePrivateState: encryptState({ company: context.company, script: context.script, briefing: context.briefing, calendar, slots: calendar.slots }),
     }, actor);
     // Both the client state and command ID survive retries and early provider webhooks.
     const clientState = Buffer.from(JSON.stringify({ kind: "ai_voice", callId: call.id })).toString("base64");
@@ -269,6 +272,12 @@ export async function stopVoiceCall(call: VoiceCall): Promise<VoiceCall> {
 }
 
 export async function runVoiceTool(callId: string, tool: string, input: Record<string, unknown>): Promise<unknown> {
+  // Read-only calendar metadata must not contend with a pending availability/booking write.
+  if (tool === "meeting_details") {
+    const call = await getVoiceCall(callId);
+    if (call.aiVoiceState !== "ACTIVE") throw new VoiceError(409, "This AI conversation is not active.");
+    return meetingDetails();
+  }
   return withVoiceLock(`tool:${callId}`, async () => {
     const call = await getVoiceCall(callId);
     if (!callView(call).active || call.aiVoiceState !== "ACTIVE") throw new VoiceError(409, "This AI conversation is not active.");
@@ -276,11 +285,13 @@ export async function runVoiceTool(callId: string, tool: string, input: Record<s
     const persist = async () => {
       await updateTwenty("agencyCalls", call.id, { aiVoicePrivateState: encryptState(state) });
     };
-    if (tool === "meeting_details") return meetingDetails();
     if (tool === "availability") {
       if (typeof input.start !== "string" || typeof input.end !== "string") throw new VoiceError(400, "Provide start and end timestamps.");
+      const timezone = input.timezone ?? "Europe/London";
+      if (typeof timezone !== "string" || !validTimezone(timezone)) throw new VoiceError(400, "Provide a valid IANA timezone; UK calls use Europe/London by default.");
       const slots = await availableSlots(input.start, input.end);
       state.slots = slots;
+      state.availabilityTimezone = timezone;
       await persist();
       return { slots };
     }
@@ -290,9 +301,12 @@ export async function runVoiceTool(callId: string, tool: string, input: Record<s
         start: typeof input.start === "string" ? input.start : "",
         name: typeof input.name === "string" ? input.name : "",
         email: typeof input.email === "string" ? input.email : "",
-        timezone: typeof input.timezone === "string" ? input.timezone : "",
+        timezone: typeof input.timezone === "string" ? input.timezone : "Europe/London",
         ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
       };
+      if (state.availabilityTimezone && state.availabilityTimezone !== bookingInput.timezone) {
+        throw new VoiceError(400, "The attendee timezone changed. Confirm it and fetch availability again before booking.");
+      }
       const booking = await bookMeeting(state, bookingInput, persist);
       await updateTwenty("agencyCalls", call.id, {
         meetingAt: booking.start,
@@ -327,6 +341,28 @@ export async function runVoiceTool(callId: string, tool: string, input: Record<s
       return { callbackRecorded: true };
     }
     if (tool === "end") {
+      if (state.attempt?.result) {
+        const ccid = call.telnyxCallId;
+        if (!ccid) throw new VoiceError(409, "The booked call has no provider call ID.");
+        const date = spokenMeetingTime(state.attempt.result.start, state.attempt.input.timezone);
+        state.bookingCloseQueued = true;
+        await persist();
+        try {
+          await telnyxClient().calls.actions.stopAIAssistant(ccid, { command_id: `ai-booked-stop-${call.id}` });
+          await telnyxClient().calls.actions.speak(ccid, {
+            payload: `You're booked for ${date}, with Matthew. Thank you for your time. Goodbye.`,
+            voice: process.env.TELNYX_AI_VOICE || "Telnyx.KokoroTTS.af_heart",
+            payload_type: "text",
+            command_id: `ai-booked-confirm-${call.id}`,
+            client_state: Buffer.from(JSON.stringify({ kind: "ai_voice", callId: call.id, purpose: "booking_confirmation" })).toString("base64"),
+          });
+        } catch (error) {
+          await updateTwenty("agencyCalls", call.id, { aiVoiceError: "The meeting is booked, but its spoken confirmation failed. Check Telnyx and end the call manually if needed." });
+          throw error;
+        }
+        if (call.aiVoiceError) await updateTwenty("agencyCalls", call.id, { aiVoiceError: "" });
+        return { ending: true, confirmationQueued: true };
+      }
       await stopVoiceCall(call);
       return { ending: true };
     }
@@ -347,11 +383,18 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
   if (event.startsWith("call.recording.")) return false;
   const callId = state.callId;
   const transcriptEvent = event === "call.ai_gather.message_history_updated" || event === "call.conversation.ended";
-  if (!["call.hangup", "call.initiated", "call.answered"].includes(event) && !transcriptEvent) return true;
+  const confirmationEnded = event === "call.speak.ended" && "purpose" in state && state.purpose === "booking_confirmation";
+  if (!["call.hangup", "call.initiated", "call.answered"].includes(event) && !transcriptEvent && !confirmationEnded) return true;
   const handle = async () => {
     const call = await getVoiceCall(callId);
     const ccid = typeof payload.call_control_id === "string" ? payload.call_control_id : "";
     if (!ccid || (call.telnyxCallId && call.telnyxCallId !== ccid)) throw new VoiceError(409, "AI event call ID does not match.");
+    if (confirmationEnded) {
+      const privateState = decryptState<PrivateState>(call.aiVoicePrivateState);
+      if (!privateState.bookingCloseQueued || !privateState.attempt?.result) throw new VoiceError(409, "No verified booking confirmation is queued.");
+      await stopVoiceCall(call);
+      return true;
+    }
     if (event === "call.hangup") {
       const cause = typeof payload.hangup_cause === "string" ? payload.hangup_cause : "";
       const endedAt = typeof payload.end_time === "string" && Number.isFinite(Date.parse(payload.end_time)) ? payload.end_time : new Date().toISOString();
@@ -394,6 +437,7 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
               call_id: call.id, tool_token: callToken(call.id),
               company_name: privateState.company, campaign_script: privateState.script,
               crm_context: JSON.stringify(privateState.briefing || { company: { name: privateState.company } }),
+              calendar_context: JSON.stringify(privateState.calendar || null),
               current_time: new Date().toISOString(),
             },
           },
@@ -411,6 +455,6 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
     return true;
   };
   // Terminal writes are idempotent and must not wait behind a stalled transcript/AI operation.
-  if (event === "call.hangup") return handle();
+  if (event === "call.hangup" || confirmationEnded) return handle();
   return withVoiceLock(`${transcriptEvent ? "transcript" : "event"}:${callId}`, handle);
 }

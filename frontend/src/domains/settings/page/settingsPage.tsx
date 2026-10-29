@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { BarChart3, Check, Clock, FlaskConical, Headphones, LogOut, Monitor, Moon, Palette, PhoneOutgoing, SkipForward, Sun, Timer, User, type IconComponent } from "@/domains/ui/icons";
 import { InfoTip, TipCard, type TipSpec } from "@/domains/ui/infoTip";
 import { AudioSourceSettings } from "@/domains/dialer/audio";
-import { InboundSettings } from "@/domains/dialer/inbound/inboundSettings";
+import { InboundSettings } from "@/domains/dialer/inbound";
 import { SectionTitle } from "@/domains/ui/sectionTitle";
 import { TabBar, type TabDef } from "@/domains/ui/tabBar";
 import { ReportCard } from "@/domains/reports/parts";
@@ -14,6 +14,7 @@ import { useAuth } from "@/domains/auth/provider";
 import { signOut } from "@/domains/auth/session";
 import { useTheme, type ThemeMode } from "@/domains/app/theme";
 import { DEFAULT_CALL_GOAL, DEFAULT_CONVERSATION_SECONDS, useReportSettings } from "@/domains/reports/data";
+import { AiAgentSettings } from "./aiAgentSettings";
 
 /** What each Reports number means; shown in Settings so the definitions live next to the goals. */
 function reportDefinitions(seconds: number, goal: number): TipSpec[] {
@@ -301,6 +302,9 @@ export function SettingsPage() {
 
         {tab === "reports" && (
           <>
+            <ReportCard title="AI agent" unit="Shared reporting identity" tip={{ title: "AI agent", icon: User, what: "Compare AI calls with human team members without attributing them to the person who clicked Call with AI." }}>
+              <AiAgentSettings />
+            </ReportCard>
             <ReportCard
               title="Goals"
               unit="Reports"

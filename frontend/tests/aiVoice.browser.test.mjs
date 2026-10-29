@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 
-test("contact AI controls require permission, preserve request identity and stop without browser audio", { timeout: 60000 }, async (t) => {
+test("AI controls preserve permission and named AI reports stay separate from the human operator", { timeout: 60000 }, async (t) => {
   const cwd = process.cwd();
   process.chdir(fileURLToPath(new URL("../", import.meta.url)));
   t.after(() => process.chdir(cwd));
@@ -30,6 +30,7 @@ test("contact AI controls require permission, preserve request identity and stop
   const starts = [];
   let activeCall = null;
   let stopped = false;
+  let agentName = "Fewzen AI";
   await page.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem("cold-dialer-token", `test.${btoa(JSON.stringify({
@@ -49,6 +50,14 @@ test("contact AI controls require permission, preserve request identity and stop
     if (path === "/api/prospects/facets") body = { total: 0, type: {}, status: {}, country: {}, industry: {}, campaign: {} };
     if (path === "/api/audio-sessions/config") body = { callMeAvailable: false, dialInAvailable: false };
     if (path === "/api/ai-calls/config") body = { enabled: true, ready: true, reason: null, activeCall };
+    if (path === "/api/ai-calls/profile") {
+      if (request.method() === "PUT") agentName = request.postDataJSON().name;
+      body = { name: agentName };
+    }
+    if (path === "/api/calls") body = [
+      { id: "human-call", direction: "OUTBOUND", status: "COMPLETED", durationSeconds: 120, startedAt: new Date().toISOString(), created_at: new Date().toISOString(), createdBy: { name: "Test Agent" }, isAiVoice: false },
+      { id: "ai-call", direction: "OUTBOUND", status: "APPOINTMENT_SET", durationSeconds: 180, startedAt: new Date().toISOString(), created_at: new Date().toISOString(), createdBy: { name: "Test Agent" }, isAiVoice: true },
+    ];
     if (path === "/api/ai-calls" && request.method() === "POST") {
       starts.push(request.postDataJSON());
       if (starts.length === 1) return route.fulfill({ status: 502, json: { error: "Call initiation uncertain. Recover the previous request." } });
@@ -87,5 +96,24 @@ test("contact AI controls require permission, preserve request identity and stop
   assert.equal(stopped, true);
   await page.getByText("Telnyx confirmed the call ended. The number has been released.", { exact: true }).waitFor();
   assert.equal(await page.getByText("Waiting for Telnyx to confirm the call has ended.", { exact: true }).count(), 0);
+  await page.goto(`http://127.0.0.1:${address.port}/settings?tab=reports`);
+  const nameInput = page.getByLabel("AI agent name", { exact: true });
+  await nameInput.fill("Discovery Scout");
+  await page.getByRole("button", { name: "Save AI agent name", exact: true }).click();
+  await page.getByText("AI agent name saved for the team.", { exact: true }).waitFor();
+  assert.equal(agentName, "Discovery Scout");
+  await page.reload();
+  await nameInput.waitFor();
+  assert.equal(await nameInput.inputValue(), "Discovery Scout");
+  await page.goto(`http://127.0.0.1:${address.port}/reports`);
+  await page.getByRole("tab", { name: "Team Performance", exact: true }).click();
+  const aiRow = page.getByRole("row").filter({ has: page.getByRole("cell", { name: "Discovery Scout (AI)", exact: true }) });
+  const humanRow = page.getByRole("row").filter({ has: page.getByRole("cell", { name: "Test Agent", exact: true }) });
+  await aiRow.waitFor();
+  await humanRow.waitFor();
+  assert.equal(await aiRow.getByRole("cell").nth(1).innerText(), "1");
+  assert.equal(await humanRow.getByRole("cell").nth(1).innerText(), "1");
+  assert.equal(await aiRow.getByRole("cell").last().innerText(), "1");
+  assert.equal(await humanRow.getByRole("cell").last().innerText(), "0");
   assert.deepEqual(errors, []);
 });

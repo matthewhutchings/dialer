@@ -41,6 +41,7 @@ export function mapCall(call: AgencyCall) {
     agencyProspectId: call.agencyProspectId || null,
     agencyLeadId: call.agencyLeadId || null,
     createdByMemberId: call.createdByMemberId || null,
+    isAiVoice: !!call.aiVoiceRequestId,
     createdBy: call.createdBy ?? null,
     created_at: call.createdAt || new Date().toISOString(),
     updated_at: call.updatedAt || new Date().toISOString(),

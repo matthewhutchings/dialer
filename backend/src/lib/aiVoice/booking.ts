@@ -79,7 +79,7 @@ async function bookingRequest(path: string, init?: RequestInit): Promise<unknown
   return response.json();
 }
 
-interface MeetingDetails {
+export interface MeetingDetails {
   connected: boolean;
   durationMinutes: number;
   timezone: string;
@@ -102,13 +102,13 @@ export async function meetingDetails(): Promise<MeetingDetails> {
   };
 }
 
-export async function availableSlots(start: string, end: string): Promise<string[]> {
+export async function availableSlots(start: string, end: string, details?: MeetingDetails): Promise<string[]> {
   const explicitOffset = /(Z|[+-]\d{2}:\d{2})$/;
   const range = Date.parse(end) - Date.parse(start);
   if (!explicitOffset.test(start) || !explicitOffset.test(end) || !Number.isFinite(range) || range <= 0 || range > 62 * 86_400_000) {
     throw new VoiceError(400, "Availability requires explicit-offset timestamps and a range of at most 62 days.");
   }
-  const details = await meetingDetails();
+  details ??= await meetingDetails();
   if (!details.connected) throw new VoiceError(503, "Matthew's calendar is disconnected. Do not offer or confirm a booking.");
   const value = await bookingRequest(`/api/availability?${new URLSearchParams({ start, end })}`);
   if (!value || typeof value !== "object" || !("slots" in value) || !Array.isArray(value.slots) ||
@@ -116,6 +116,50 @@ export async function availableSlots(start: string, end: string): Promise<string
     throw new VoiceError(502, "Booking service returned invalid availability.");
   }
   return value.slots;
+}
+
+export interface CalendarBriefing {
+  fetchedAt: string;
+  start: string;
+  end: string;
+  timezone: "Europe/London";
+  details: MeetingDetails;
+  slots: string[];
+  spokenSlots: { start: string; label: string }[];
+}
+
+export function spokenMeetingTime(start: string, timezone = "Europe/London"): string {
+  const date = new Date(start);
+  const minute = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, minute: "numeric" }).format(date);
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone, weekday: "long", day: "numeric", month: "long",
+    year: "numeric", hour: "numeric", ...(Number(minute) ? { minute: "2-digit" as const } : {}),
+    hourCycle: "h12", timeZoneName: "long",
+  }).format(date);
+}
+
+export function remainingWeek(now: Date): { start: string; end: string } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)!.value);
+  const today = new Date(Date.UTC(part("year"), part("month") - 1, part("day")));
+  const monday = new Date(today.getTime() + (7 - ((today.getUTCDay() + 6) % 7)) * 86_400_000);
+  const offset = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London", timeZoneName: "shortOffset",
+  }).formatToParts(monday).find((item) => item.type === "timeZoneName")!.value;
+  const end = new Date(monday.getTime() - (offset === "GMT+1" ? 3_600_000 : 0));
+  return { start: now.toISOString(), end: end.toISOString() };
+}
+
+export async function preloadCalendar(now = new Date()): Promise<CalendarBriefing> {
+  const range = remainingWeek(now);
+  const details = await meetingDetails();
+  const slots = await availableSlots(range.start, range.end, details);
+  return {
+    ...range, fetchedAt: now.toISOString(), timezone: "Europe/London", details, slots,
+    spokenSlots: slots.map((start) => ({ start, label: spokenMeetingTime(start) })),
+  };
 }
 
 export async function bookMeeting(

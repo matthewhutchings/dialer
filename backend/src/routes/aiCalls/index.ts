@@ -10,6 +10,7 @@ import { telnyxClient } from "../../lib/telnyx/index.js";
 import { listTwentyAll } from "../../lib/twenty/client/index.js";
 import type { AgencyPhone } from "../twenty/phones/types.js";
 import { meetingDetails } from "../../lib/aiVoice/booking.js";
+import { readAgentProfile, saveAgentProfile } from "../../lib/aiVoice/profile.js";
 
 const router = Router();
 const log = createLogger("ai-calls");
@@ -71,6 +72,21 @@ router.post("/tools/:tool", async (req, res) => {
 });
 
 router.use(authMiddleware);
+router.get("/profile", async (_req, res) => {
+  try {
+    res.json(await readAgentProfile());
+  } catch (error) {
+    failure(res, error);
+  }
+});
+router.put("/profile", async (req: AuthRequest, res) => {
+  if (!requireMember(req, res)) return;
+  try {
+    res.json(await saveAgentProfile(req.body, await resolveActor(req)));
+  } catch (error) {
+    failure(res, error);
+  }
+});
 router.get("/config", async (_req, res) => {
   try {
     const reason = configurationError();
