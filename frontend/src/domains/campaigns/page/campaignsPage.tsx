@@ -78,6 +78,13 @@ export function CampaignsPage() {
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto p-6">
+        {(scriptsQuery.error || facetsQuery.error) && (
+          <p role="status" className="mb-4 text-[13px] text-amber-700">
+            Campaign usage counts may be incomplete.
+            {scriptsQuery.error && ` Scripts: ${describeError(scriptsQuery.error).detail}`}
+            {facetsQuery.error && ` Contacts: ${describeError(facetsQuery.error).detail}`}
+          </p>
+        )}
         {campaignsQuery.isLoading ? (
           <p className="text-sm text-[var(--ods-text-secondary)]">Loading campaigns…</p>
         ) : campaignsQuery.error ? (
@@ -103,7 +110,7 @@ export function CampaignsPage() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {campaigns.map((campaign) => {
               const scriptCount = scriptsByCampaign.get(campaign.id) ?? 0;
-              const contactCount = facetsQuery.data?.campaign?.[campaign.id] ?? 0;
+              const contactCount = facetsQuery.data?.campaign?.[campaign.id];
               return (
                 <Card key={campaign.id} className="flex flex-col">
                   <div className="flex items-start justify-between gap-3">
@@ -114,8 +121,8 @@ export function CampaignsPage() {
                     <StatusBadge status={campaign.status} />
                   </div>
                   <div className="mt-5 flex flex-wrap gap-4 text-[13px] text-[var(--ods-text-secondary)]">
-                    <span className="inline-flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />{contactCount} contacts</span>
-                    <span className="inline-flex items-center gap-1.5"><BookOpen className="h-3.5 w-3.5" />{scriptCount} {scriptCount === 1 ? "script" : "scripts"}</span>
+                    <span className="inline-flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />{contactCount ?? (facetsQuery.isLoading ? "…" : "—")} contacts</span>
+                    <span className="inline-flex items-center gap-1.5"><BookOpen className="h-3.5 w-3.5" />{scriptsQuery.isLoading ? "…" : scriptsQuery.error ? "—" : scriptCount} {scriptCount === 1 ? "script" : "scripts"}</span>
                   </div>
                   <div className="mt-5 flex items-center justify-between border-t border-[var(--ods-border)] pt-3">
                     <Button variant="ghost" size="sm" icon={Edit3} onClick={() => setDraft({ id: campaign.id, name: campaign.name, type: campaign.type, status: campaign.status })}>

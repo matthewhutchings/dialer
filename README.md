@@ -159,19 +159,24 @@ Two ways to work, depending on whether you need the browser softphone.
 Needs a softphone, so this is the standalone path (`frontend/` or `railcode/`).
 The browser holds the SIP call itself.
 
-1. **Open a lead or prospect.** The script for its campaign loads next to the
+1. **Set up a campaign and script.** Create the campaign in Campaigns, then
+   link its call script from Scripts.
+2. **Assign contacts.** Select contacts in Contacts and choose **Set campaign**.
+   The linked script then loads beside the dialer; people inherit their
+   company's campaign.
+3. **Open a lead or prospect.** The script for its campaign loads next to the
    dialer, with its objection handling.
-2. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
+4. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
    another member holds it you get a 409 naming them, and the dial aborts
    before any SIP traffic.
-3. **Dial.** The call row opens as `IN_PROGRESS` *before* the INVITE, so a call
+5. **Dial.** The call row opens as `IN_PROGRESS` *before* the INVITE, so a call
    that fails to connect is still on record.
-4. **Talk.** Hold, mute and redial from the softphone. Telnyx is already
+6. **Talk.** Hold, mute and redial from the softphone. Telnyx is already
    recording server-side from the moment it connects.
-5. **Save a disposition.** One action patches the call status, runs the
+7. **Save a disposition.** One action patches the call status, runs the
    recording reconcile, releases the number, and moves the prospect or lead
    status.
-6. **Review.** The recording and transcript are on the call row, attached by
+8. **Review.** The recording and transcript are on the call row, attached by
    webhook a few seconds after you hang up. Play them from call history.
 
 ### B. Logging inside Twenty
@@ -1096,6 +1101,7 @@ served inside Twenty at `/dialer/*`.
 | POST | `/api/prospects/:id/website-sent` | Advances `outboundLabel` to `SMS_IN_PROGRESS`. |
 | POST | `/api/prospects/:id/ensure-offer` | Idempotently creates the `INDUSTRY:<key>` offer. |
 | GET POST PATCH DELETE | `/api/campaigns` | CRUD. |
+| POST | `/api/contacts/campaign` | Assign or clear a campaign for selected prospects, leads and people (through their company). |
 | GET POST PATCH DELETE | `/api/people` | The people at a business (`agencyPerson`), by `prospectId` or `leadId`. |
 | GET POST PATCH DELETE | `/api/call-campaigns` | Dial lists for power dialing. Status follows the shared `callCampaign` machine. |
 | GET | `/api/prospects/page` | Contacts a window at a time, searched, filtered and sorted in Twenty. |
