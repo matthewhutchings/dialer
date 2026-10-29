@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button } from "@/domains/ui/button";
 import { buttonClass } from "@/domains/ui/button";
 import { inputClass } from "@/domains/ui/input";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Backspace,
@@ -167,6 +167,7 @@ function useContactSide() {
 
 export function DialerDock() {
   const dialer = useDialer();
+  const location = useLocation();
   const { isOpen, close, open, pinned, setPinned, state, duration } = dialer;
   const ref = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -237,6 +238,8 @@ export function DialerDock() {
     if (!targetType || !targetId) return;
     setSide((s) => (s?.kind === "contact" && s.contactId !== targetId ? { kind: "contact", contactType: targetType, contactId: targetId } : s));
   }, [targetType, targetId]);
+
+  if (location.pathname === "/dialer") return null;
 
   if (!isOpen) {
     if (!isLive(state)) return null;

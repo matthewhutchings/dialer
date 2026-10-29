@@ -19,6 +19,7 @@ import {
   Clock,
   Shield,
   Phone,
+  PhoneCall,
   Settings,
   LogOut,
   Bell,
@@ -39,6 +40,7 @@ const navGroups: NavItem[][] = [
     { to: '/reports', label: 'Reports', icon: BarChart3 },
     { to: '/contacts', label: 'Contacts', icon: Users },
     { to: '/campaigns', label: 'Campaigns', icon: FileText },
+    { to: '/dialer', label: 'Dialer', icon: PhoneCall },
   ],
   [
     { to: '/scripts', label: 'Scripts', icon: FileText },

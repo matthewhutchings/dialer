@@ -1,0 +1,1 @@
+export { DialerPage } from "./dialerPage";

@@ -164,8 +164,11 @@ The browser holds the SIP call itself.
 2. **Assign contacts.** Select contacts in Contacts and choose **Set campaign**.
    The linked script then loads beside the dialer; people inherit their
    company's campaign.
-3. **Open a lead or prospect.** The script for its campaign loads next to the
-   dialer, with its objection handling.
+3. **Open Dialer.** Choose **Not contacted** to load companies with no call
+   history, then choose **Start calling**. The company profile, saved call
+   opener, linked script and notes stay on screen. Choose a disposition to save
+   the call and automatically dial the next company. Previous, Next, Skip and
+   Remove from dialer let you work the list without deleting CRM records.
 4. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
    another member holds it you get a 409 naming them, and the dial aborts
    before any SIP traffic.

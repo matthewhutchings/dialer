@@ -25,6 +25,8 @@ export interface ContactRow {
   company?: string;
   phone?: string;
   email?: string;
+  callOpener?: string | null;
+  notes?: string | null;
   city?: string;
   state?: string;
   country?: string;

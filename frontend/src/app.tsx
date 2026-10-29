@@ -21,6 +21,7 @@ const SignupPage = React.lazy(() => import("@/domains/auth/signup").then((m) => 
 const ReportsPage = React.lazy(() => import("@/domains/reports/page").then((m) => ({ default: m.ReportsPage })));
 const ProspectPage = React.lazy(() => import("@/domains/contact/list").then((m) => ({ default: m.ProspectPage })));
 const CampaignsPage = React.lazy(() => import("@/domains/campaigns/page").then((m) => ({ default: m.CampaignsPage })));
+const DialerPage = React.lazy(() => import("@/domains/dialer/page").then((m) => ({ default: m.DialerPage })));
 const ContactPage = React.lazy(() => import("@/domains/contact/page").then((m) => ({ default: m.ContactPage })));
 const CallHistoryPage = React.lazy(() => import("@/domains/calls/history").then((m) => ({ default: m.CallHistoryPage })));
 const PhoneNumbersPage = React.lazy(() => import("@/domains/phoneNumbers/page").then((m) => ({ default: m.PhoneNumbersPage })));
@@ -74,6 +75,7 @@ function AppRoutes() {
                   <Route path="contacts/:prospectId" element={<Lazy fallback={<ContactWorkspaceSkeleton />}><ContactPage key="prospect" type="prospect" /></Lazy>} />
                   <Route path="prospects/:prospectId" element={<ProspectRedirect />} />
                   <Route path="campaigns" element={<Lazy fallback={<ReportStylePageSkeleton pickers={0} />}><CampaignsPage /></Lazy>} />
+                  <Route path="dialer" element={<Lazy fallback={<ReportStylePageSkeleton pickers={0} />}><DialerPage /></Lazy>} />
                   <Route path="scripts" element={<Lazy fallback={<ScriptsPageSkeleton />}><ScriptsPage /></Lazy>} />
                   <Route path="history" element={<Lazy fallback={<TablePageSkeleton columns={8} filters={6} />}><CallHistoryPage /></Lazy>} />
                   <Route path="history/:callId" element={<Lazy fallback={<CallReviewSkeleton />}><CallDetailPage /></Lazy>} />

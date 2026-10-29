@@ -16,6 +16,7 @@ export interface AgencyProspect {
   rating?: number;
   reviewCount?: number;
   email?: string;
+  callOpener?: string | null;
   externalId?: string;
   outboundState?: string | { value?: string; label?: string };
   outboundLabel?: string | { value?: string; label?: string };
