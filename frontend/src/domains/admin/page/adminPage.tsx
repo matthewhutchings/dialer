@@ -16,6 +16,7 @@ import {
   type IconComponent,
 } from "@/domains/ui/icons";
 import { usePersistedState } from "@/domains/app/persistedState";
+import { CallingCosts } from "@/domains/admin/callingCosts";
 import { SelectMenu } from "@/domains/ui/menu";
 import { SectionTitle } from "@/domains/ui/sectionTitle";
 import { BarChart } from "@/domains/reports/parts";
@@ -50,11 +51,12 @@ import {
   type ResolvedActivity,
 } from "@/domains/admin/data";
 
-type Tab = "overview" | "activity" | "team" | "objects";
+type Tab = "overview" | "activity" | "team" | "costs" | "objects";
 const TABS: { key: Tab; label: string; icon: IconComponent }[] = [
   { key: "overview", label: "Overview", icon: BarChart3 },
   { key: "activity", label: "Activity Log", icon: Activity },
   { key: "team", label: "Team Activity", icon: Users },
+  { key: "costs", label: "Calling costs", icon: BarChart3 },
   { key: "objects", label: "Data Objects", icon: Database },
 ];
 
@@ -89,11 +91,11 @@ export function AdminPage() {
         <SectionTitle
           as="h1"
           title="Admin"
-          pill={isLoading ? <Skeleton className="h-3 w-14" /> : `${events.length} events`}
+          pill={tab === "costs" ? "Telnyx usage" : isLoading ? <Skeleton className="h-3 w-14" /> : `${events.length} events`}
           info={{
             title: "Admin",
             icon: Shield,
-            what: "Every create, update and delete on the dialer's data in Twenty, and who did it.",
+            what: "Dialer data activity in Twenty, plus account-wide calling charges from Telnyx in Calling costs.",
             formula: ["Twenty activity", "+", "Record creators", "=", "Who did what"],
             use: "Pick a date range on the right; every tab updates.",
           }}
@@ -113,7 +115,9 @@ export function AdminPage() {
       </div>
 
       <div className="p-5 space-y-4">
-        {error ? (
+        {tab === "costs" ? (
+          <CallingCosts range={range} />
+        ) : error ? (
           <EmptyState>Could not load activity from Twenty. {(error as Error).message}</EmptyState>
         ) : isLoading ? (
           <AdminBodySkeleton tab={tab} />

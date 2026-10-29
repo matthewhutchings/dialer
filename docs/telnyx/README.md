@@ -25,6 +25,42 @@ Backend rule: all Telnyx REST goes through `backend/src/lib/telnyx.ts`
 | Numbers | `GET /v2/phone_numbers`, `PATCH /v2/phone_numbers/{id}[/messaging]` |
 | SIP (voice path) | Credential connections + outbound voice profiles; browser SIP over `wss://sip.telnyx.com:7443` (raw SIP.js). Telnyx's own WebRTC SDK instead uses `wss://rtc.telnyx.com:443` + TURN on 3478/443 |
 | AI search/transcripts | `conversation_persistence: true` on the connection (auto-transcribe/store/index) |
+| Calling costs | `GET /v2/usage_reports` through the server SDK; Admin > Calling costs |
+
+## Calling costs
+
+**Admin > Calling costs** (after Team Activity) reads actual reported Telnyx
+usage charges for the whole account, including connections outside this dialer.
+The existing date-range picker selects UTC calendar dates for this tab.
+`GET /api/admin/calling-costs?since=YYYY-MM-DD&until=YYYY-MM-DD` requires the
+same signed-in session as other admin reports; `until` is exclusive, with a
+maximum range of 31 days.
+
+The current account balance, available credit, credit limit and pending
+amount are retrieved independently using `GET /v2/balance`, exposed at the
+authenticated `GET /api/admin/calling-balance`. They are not historical
+balances and do not change with the date filter. Available credit includes
+the credit limit and is not labelled prepaid balance. Balance and usage
+errors are independent so one unavailable service does not hide the other;
+Refresh updates both. LLM request/token tracking is not included.
+
+The report includes SIP/PSTN, Voice API, WebRTC, recording, Call Control
+features, answering machine detection, speech-to-text and text-to-speech.
+These are separate charge components, not unique call counts: a bridged call
+can incur multiple leg and feature charges. All pages are fetched for every
+included service; missing/invalid costs, incomplete pagination or upstream
+failures return an error rather than a misleading partial total.
+
+Currencies stay separate, and sub-cent charges remain visible. Usage can be
+delayed or adjusted by Telnyx; Refresh fetches the latest report. Costs are
+not currently persisted on Twenty call records. This is not a full account
+invoice: phone-number rental, taxes and products outside the listed services
+(for example AI assistants, conferencing and storage) are excluded.
+The backend uses `TELNYX_API_KEY`; no additional credentials or schema migration
+are required.
+
+References: [usage reports](https://developers.telnyx.com/api-reference/usage-reports/get-usage-report)
+and [report options](https://developers.telnyx.com/api-reference/usage-reports/get-usage-report-options).
 
 ## Webhooks (receiver: `frontend/api/telnyx-webhook.ts`)
 

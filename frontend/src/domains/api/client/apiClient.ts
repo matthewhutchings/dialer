@@ -306,6 +306,10 @@ export const api = {
   },
 
   admin: {
+    callingBalance: () =>
+      request<import("@/domains/admin/callingCosts").CallingBalanceResponse>("/api/admin/calling-balance"),
+    callingCosts: (since: string, until: string) =>
+      request<import("@/domains/admin/callingCosts").CallingCostsResponse>(`/api/admin/calling-costs?${new URLSearchParams({ since, until })}`),
     /** Create/update/delete events on dialer records since `since` (ISO), newest first. */
     activity: (since: string) =>
       request<import("@/domains/admin/data").AdminActivityResponse>(`/api/admin/activity?since=${encodeURIComponent(since)}`),

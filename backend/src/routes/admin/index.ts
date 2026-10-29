@@ -6,6 +6,8 @@ import { listWorkspaceMembers } from "../../lib/twenty/workspaceMember/index.js"
 import { createLogger } from "../../lib/logger/index.js";
 import { DIALER_TARGET_FILTER, mapActivity, recordTargetFilter } from "./helpers/index.js";
 import type { AdminActivity, AdminActivityResponse } from "./types.js";
+import { callingCostRange, loadCallingBalance, loadCallingCosts } from "./callingCosts.js";
+import { telnyxErrorMessage } from "../../lib/telnyx/index.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -16,6 +18,30 @@ const PAGE_SIZE = 200;
 /** Hard cap so a wide range cannot fan out into dozens of Twenty requests. */
 const MAX_PAGES = 15;
 const DEFAULT_RANGE_MS = 7 * 24 * 3600 * 1000;
+
+router.get("/calling-balance", async (_req, res) => {
+  try {
+    res.json(await loadCallingBalance());
+  } catch (err) {
+    log.error("Failed to load Telnyx balance:", telnyxErrorMessage(err));
+    res.status(502).json({ error: "Could not load the account balance from Telnyx. Please try again or check the account's billing access." });
+  }
+});
+
+router.get("/calling-costs", async (req, res) => {
+  let range: ReturnType<typeof callingCostRange>;
+  try {
+    range = callingCostRange(req.query.since, req.query.until);
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : "Invalid date range" });
+  }
+  try {
+    res.json(await loadCallingCosts(range));
+  } catch (err) {
+    log.error("Failed to load Telnyx calling costs:", telnyxErrorMessage(err));
+    res.status(502).json({ error: "Could not load calling costs from Telnyx. Please try again or check the account's usage reporting access." });
+  }
+});
 
 /**
  * GET /api/admin/activity?since=<ISO>
