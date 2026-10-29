@@ -1,10 +1,12 @@
 import { Router } from "express";
-import { authMiddleware, AuthRequest } from "../../middleware/auth.js";
+import { authMiddleware, AuthRequest, requireMember } from "../../middleware/auth.js";
 import { createLogger } from "../../lib/logger/index.js";
 import { telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { audioSessionStore } from "../../lib/twenty/audioSession/index.js";
 import { bridgeConfig, telnyxBridgeCalls } from "../../lib/audioBridge/telnyx.js";
 import { SESSION_TTL_MS, SIP_PRESENCE_TTL_MS, digitsOnly, generatePin, isExpired, isLive, sipPresenceMemberId, type AudioSession } from "../../lib/audioBridge/index.js";
+import { readInboundSettings, saveInboundSettings, validateInboundSettings } from "../../lib/audioBridge/inboundSettings.js";
+import { resolveActor } from "../../lib/twenty/actor/index.js";
 
 /**
  * Phone audio for the dialer (Settings -> Audio Source: "Call me" / "Dial in").
@@ -17,6 +19,37 @@ const log = createLogger("audio-sessions");
 const INSTANCE_ID = /^[a-zA-Z0-9-]{16,80}$/;
 
 const E164 = /^\+[1-9]\d{6,14}$/;
+
+router.get("/inbound-config", async (_req, res) => {
+  const config = bridgeConfig();
+  try {
+    const settings = await readInboundSettings(config.inboundNumber, config);
+    res.json({
+      ...settings,
+      inboundNumber: config.inboundNumber,
+      browserAvailable: !!config.appId && !!config.agentSipUri && !!config.inboundNumber,
+    });
+  } catch (err: any) {
+    log.error(`inbound settings read failed: ${err?.message}`);
+    res.status(502).json({ error: "Could not read inbound routing settings.", details: err?.message });
+  }
+});
+
+router.put("/inbound-config", async (req: AuthRequest, res) => {
+  if (!requireMember(req, res)) return;
+  let settings;
+  try { settings = validateInboundSettings(req.body, bridgeConfig().inboundNumber); }
+  catch (err) {
+    return void res.status(400).json({ error: err instanceof Error ? err.message : "Invalid inbound settings." });
+  }
+  try {
+    await saveInboundSettings(bridgeConfig().inboundNumber, settings, await resolveActor(req));
+    res.json(settings);
+  } catch (err: any) {
+    log.error(`inbound settings save failed: ${err?.message}`);
+    res.status(502).json({ error: "Could not save inbound routing settings.", details: err?.message });
+  }
+});
 
 /** What the browser may see: no other operators' PINs, nothing internal. */
 function view(s: AudioSession) {
@@ -66,6 +99,10 @@ router.post("/presence", async (req: AuthRequest, res) => {
   if (!memberId) return void res.status(401).json({ error: "Sign in again to update phone availability." });
   if (!INSTANCE_ID.test(instanceId)) return void res.status(400).json({ error: "A valid phone session id is required." });
   if (typeof registered !== "boolean") return void res.status(400).json({ error: "registered must be true or false." });
+  const { appId, agentSipUri, inboundNumber } = bridgeConfig();
+  if (registered && (!appId || !agentSipUri || !inboundNumber)) {
+    return void res.status(503).json({ error: "Inbound browser routing is not configured on the server." });
+  }
 
   try {
     const now = new Date();

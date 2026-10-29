@@ -19,6 +19,7 @@
     "helmet": "^8.0.0",
     "hono": "^4.6.0",
     "jsonwebtoken": "^9.0.2",
+    "libphonenumber-js": "^1.12.0",
     "multer": "^2.4.0",
     "papaparse": "^5.4.1",
     "telnyx": "^7.21.0",

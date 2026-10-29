@@ -273,12 +273,20 @@ router.patch("/:id", async (req, res) => {
     const allowed = [
       "status", "disposition", "notes", "endedAt", "durationSeconds", "telnyxCallId", "telnyxRecordingId", "recordingUrl",
       "transcript", "transcriptionStatus", "summary", "debugLog",
+      "agencyProspectId", "agencyLeadId",
       "meetingUrl", "meetingProvider", "meetingAt", "meetingStatus", "meetingBookingId",
       "aiSummary", "aiSentiment", "aiScore", "aiKeyPoints", "aiScores", "aiConfidence", "aiModel", "aiAnalyzedAt",
     ] as const;
     const patch: Record<string, unknown> = {};
     for (const key of allowed) {
       if (req.body?.[key] !== undefined) patch[key] = req.body[key];
+    }
+    for (const key of ["agencyProspectId", "agencyLeadId"] as const) {
+      if (patch[key] !== undefined && patch[key] !== null &&
+        (typeof patch[key] !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patch[key]))) {
+        res.status(400).json({ error: `${key} must be a record id or null` });
+        return;
+      }
     }
     if (patch.status !== undefined) {
       const split = splitStatus(patch.status);

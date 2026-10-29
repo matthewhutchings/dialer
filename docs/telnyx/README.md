@@ -71,4 +71,11 @@ Backend rule: all Telnyx REST goes through `backend/src/lib/telnyx.ts`
 `TELNYX_INBOUND_NUMBER`, `TELNYX_AGENT_SIP_URI`, `TELNYX_FALLBACK_PHONE` and
 `TELNYX_HOLD_AUDIO_URL`
 (optional inbound call routing; see [deployment](../deployment.md#telnyx-inbound-call-fallback)).
+Agents explicitly opt into inbound browser calls with **Inbound: Online**;
+outbound audio selection is separate. Workspace members can override the
+fallback mobile and hold-audio URL in **Settings → Inbound Calls**, persisted
+in Twenty's `agencyPhone.inboundRouting` field (provisioned on save, or ahead
+of time with `bun run twenty:schema`). The incoming-call panel matches the
+original caller to CRM records and offers record links; see
+[caller matching](../deployment.md#inbound-caller-matching).
 Browser SIP creds are `VITE_SIP_*` (baked into the SPA bundle at build time).

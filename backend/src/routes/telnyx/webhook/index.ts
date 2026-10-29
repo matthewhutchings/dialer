@@ -7,6 +7,8 @@ import { createLogger } from "../../../lib/logger/index.js";
 import type { AgencyCall } from "../../calls/types.js";
 import { handleBridgeEvent, handleIncomingCall } from "../../../lib/audioBridge/index.js";
 import { bridgeConfig, bridgeDeps, telnyxIncomingCalls } from "../../../lib/audioBridge/telnyx.js";
+import { readInboundSettings } from "../../../lib/audioBridge/inboundSettings.js";
+import { decodeState, digitsOnly } from "../../../lib/audioBridge/index.js";
 import { handleMessageEvent } from "../../messages/events.js";
 
 const log = createLogger('telnyx-webhook');
@@ -193,8 +195,16 @@ router.post(["/telnyx", "/"], async (req, res) => {
     // Phone audio (Call me / Dial in) call-control events, when configured.
     const config = bridgeConfig();
     const bridged = config.appId ? await handleBridgeEvent(eventType, payload, bridgeDeps()) : null;
+    const state = decodeState(payload?.client_state);
+    const needsRoutingSettings =
+      (eventType === "call.initiated" && payload?.direction === "incoming" && !state &&
+        digitsOnly(payload?.to) === digitsOnly(config.inboundNumber)) ||
+      (eventType === "call.answered" && state?.kind === "inbound");
+    const inboundConfig = !bridged && config.appId && config.inboundNumber && needsRoutingSettings
+      ? { ...config, ...await readInboundSettings(config.inboundNumber, config) }
+      : config;
     const inbound = !bridged && config.appId && config.inboundNumber
-      ? await handleIncomingCall(eventType, payload, config, {
+      ? await handleIncomingCall(eventType, payload, inboundConfig, {
           store: bridgeDeps().store,
           calls: telnyxIncomingCalls,
           now: () => new Date(),

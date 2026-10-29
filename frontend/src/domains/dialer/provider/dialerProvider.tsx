@@ -16,6 +16,8 @@ import { pickCallLine } from "@/domains/dialer/route";
 import { startRingtone, stopRingtone } from "@/domains/dialer/audio";
 import { showCallNotification, dismissCallNotification, requestNotificationPermission } from "@/domains/dialer/notifications";
 import { incomingCaller } from "@/domains/dialer/sip/incomingCaller";
+import { createPresenceQueue } from "@/domains/dialer/inbound/presenceQueue";
+import { callerTarget, type CallerLookup } from "@/domains/dialer/inbound/callerMatch";
 
 /** Explicit opt-in only (?simulate=1): simulated calls never happen silently. */
 export const SIMULATE_CALLS =
@@ -89,6 +91,7 @@ interface IncomingCall {
   session: any;
   number: string;
   name: string;
+  lookup: Promise<CallerLookup>;
 }
 
 interface DialerValue {
@@ -105,6 +108,10 @@ interface DialerValue {
   setLine: (id: string) => void;
   registered: boolean;
   phoneAudio: boolean;
+  inboundEnabled: boolean;
+  inboundOnline: boolean;
+  inboundError: string | null;
+  setInboundEnabled: (enabled: boolean) => void;
   // the call
   state: CallState;
   target: DialTarget | null;
@@ -123,6 +130,7 @@ interface DialerValue {
   failure: ClassifiedFailure | null;
   recWarning: string | null;
   incoming: { number: string; name: string } | null;
+  callerLookup: CallerLookup | null;
   saveLabel: string;
   saving: boolean;
   /** The live sip.js session, if any. */
@@ -276,7 +284,31 @@ export function DialerProvider({ children }: { children: ReactNode }) {
   const [failure, setFailure] = useState<ClassifiedFailure | null>(null);
   const [recWarning, setRecWarning] = useState<string | null>(null);
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
+  const [callerLookup, setCallerLookup] = useState<CallerLookup | null>(null);
+  const callerLookupSession = useRef<unknown>(null);
   const [registered, setRegistered] = useState(false);
+  const [inboundEnabled, setInboundEnabledState] = useState(false);
+  const [inboundOnline, setInboundOnline] = useState(false);
+  const [inboundError, setInboundError] = useState<string | null>(null);
+  const inboundAllowedRef = useRef(false);
+  const [presenceInstanceId] = useState(() => crypto.randomUUID());
+  const [publishPresence] = useState(() => createPresenceQueue((online) =>
+    api.audioSessions.presence({ instanceId: presenceInstanceId, registered: online }),
+  ));
+  const setInboundEnabled = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      inboundAllowedRef.current = false;
+      setInboundOnline(false);
+      if (incoming) {
+        void incoming.session.reject({ statusCode: 480 }).catch((err: unknown) =>
+          sipLog.error("session", `could not decline offline inbound call: ${describeError(err).detail}`),
+        );
+        setIncoming(null);
+      }
+    }
+    setInboundError(null);
+    setInboundEnabledState(enabled);
+  }, [incoming]);
   const [saving, setSaving] = useState(false);
   const [options, setOptions] = useState<DialOptions>({});
 
@@ -333,12 +365,35 @@ export function DialerProvider({ children }: { children: ReactNode }) {
 
   // ---- SIP agent: one per signed-in session ----
   const handleInvite = useCallback((session: any) => {
+    if (!inboundAllowedRef.current && !SIMULATE_CALLS) {
+      void session.reject({ statusCode: 480 }).catch((err: unknown) =>
+        sipLog.error("session", `could not decline offline inbound call: ${describeError(err).detail}`),
+      );
+      return;
+    }
     if (stateRef.current !== "idle" && stateRef.current !== "ended") {
       // Busy on another call: decline rather than drop the live one.
       try { session.reject({ statusCode: 486 }); } catch { /* gone */ }
       return;
     }
-    setIncoming({ session, ...incomingCaller(session) });
+    const caller = incomingCaller(session);
+    callerLookupSession.current = session;
+    const canMatch = /^\+[1-9]\d{6,14}$/.test(caller.number);
+    setCallerLookup({ matches: [], loading: canMatch, error: null });
+    const lookup: Promise<CallerLookup> = canMatch
+      ? api.contacts.caller(caller.number).then(({ matches }) => ({ matches, loading: false, error: null }))
+        .catch((err: unknown) => {
+          sipLog.error("app", `inbound caller lookup failed: ${describeError(err).detail}`);
+          return { matches: [], loading: false, error: describeError(err).detail };
+        })
+      : Promise.resolve({ matches: [], loading: false, error: null });
+    void lookup.then((result) => {
+      if (callerLookupSession.current !== session) return;
+      setCallerLookup(result);
+      setIncoming((current) => current && current.session === session
+        ? { ...current, name: result.matches.length === 1 ? result.matches[0].name : caller.name } : current);
+    });
+    setIncoming({ session, ...caller, lookup });
     setIsOpen(true);
     session.stateChange.addListener((s: string) => {
       if (s === "Terminated") setIncoming((cur) => (cur?.session === session ? null : cur));
@@ -359,7 +414,6 @@ export function DialerProvider({ children }: { children: ReactNode }) {
           },
         });
         agentRef.current = agent;
-        setRegistered(true);
         return agent;
       } catch (err: any) {
         sipLog.error("register", `SIP agent failed to start: ${err?.message || err}`);
@@ -372,43 +426,61 @@ export function DialerProvider({ children }: { children: ReactNode }) {
     return agentStarting.current;
   }, [handleInvite]);
 
-  // Register after login so inbound calls ring while idle. Phone-audio mode
-  // and ?simulate=1 never touch SIP.
+  // Outbound computer audio and inbound browser availability share the SIP agent,
+  // but neither determines the other's chosen audio destination.
   useEffect(() => {
-    if (!user || phoneAudio || SIMULATE_CALLS || !isSipConfigured()) return;
-    void ensureAgent();
-  }, [user, phoneAudio, ensureAgent]);
+    if (!user || (phoneAudio && !inboundEnabled) || SIMULATE_CALLS) return;
+    if (!isSipConfigured()) {
+      if (inboundEnabled) setInboundError("Browser SIP credentials are not configured.");
+      return;
+    }
+    void ensureAgent().then((agent) => {
+      if (!agent && inboundEnabled) setInboundError("Could not register the browser phone. Turn inbound off and on to retry.");
+    });
+  }, [user, phoneAudio, inboundEnabled, ensureAgent]);
   useEffect(() => () => {
     void agentRef.current?.stop();
     agentRef.current = null;
   }, []);
 
-  // Keep the backend's failover decision aligned with the actual SIP REGISTER.
+  useEffect(() => {
+    inboundAllowedRef.current = false;
+    setInboundEnabledState(false);
+    setInboundOnline(false);
+  }, [user?.memberId]);
+
+  // Serialize writes so a late online heartbeat cannot undo an offline release.
   useEffect(() => {
     if (!user) return;
-    const key = "cold-dialer-sip-presence-id";
-    let instanceId = localStorage.getItem(key);
-    if (!instanceId) {
-      instanceId = crypto.randomUUID();
-      localStorage.setItem(key, instanceId);
-    }
-
     let stopped = false;
-    const send = (isRegistered: boolean) => {
-      void api.audioSessions.presence({ instanceId, registered: isRegistered }).catch((err) => {
-        if (!stopped) sipLog.error("register", `presence heartbeat failed: ${describeError(err).detail}`);
+    const available = inboundEnabled && registered && !SIMULATE_CALLS;
+    inboundAllowedRef.current = false;
+    setInboundOnline(false);
+    const send = (online: boolean) => {
+      void publishPresence(online, () => !stopped).then((sent) => {
+        if (!stopped && sent) {
+          inboundAllowedRef.current = online;
+          setInboundOnline(online);
+          if (online || !inboundEnabled) setInboundError(null);
+        }
+      }).catch((err: unknown) => {
+        sipLog.error("register", `presence update failed: ${describeError(err).detail}`);
+        if (!stopped) {
+          inboundAllowedRef.current = false;
+          setInboundOnline(false);
+          setInboundError(`Inbound availability was not updated: ${describeError(err).detail}`);
+        }
       });
     };
-    send(registered);
-    const interval = registered ? setInterval(() => send(true), 20_000) : null;
+    send(available);
+    const interval = available ? setInterval(() => send(true), 20_000) : null;
     return () => {
       stopped = true;
+      inboundAllowedRef.current = false;
       if (interval) clearInterval(interval);
-      if (registered) void api.audioSessions.presence({ instanceId, registered: false }).catch((err) => {
-        sipLog.error("register", `presence release failed: ${describeError(err).detail}`);
-      });
+      if (available) send(false);
     };
-  }, [registered, user]);
+  }, [registered, inboundEnabled, user?.memberId, publishPresence]);
 
   // ---- helpers ----
   const finishCall = useCallback((finalOutcome?: string) => {
@@ -1132,6 +1204,7 @@ export function DialerProvider({ children }: { children: ReactNode }) {
   const accept = useCallback(async () => {
     const call = incoming;
     if (!call) return;
+    if (!inboundAllowedRef.current && !SIMULATE_CALLS) return;
     setIncoming(null);
     sipLog.clear();
     resetCall();
@@ -1168,11 +1241,25 @@ export function DialerProvider({ children }: { children: ReactNode }) {
         });
       }
       void lc.ensureRow();
+      void call.lookup.then(async ({ matches }) => {
+        const next = callerTarget(call.number, call.name, matches);
+        if (lifecycleRef.current === lc) setTarget(next);
+        if (next.contactId) {
+          try {
+            await lc.associateContact(
+              next.contactType === "prospect" ? next.contactId : null,
+              next.contactType === "lead" ? next.contactId : null,
+            );
+          } catch (err) {
+            toastError("Caller matched but call not linked", describeError(err).detail);
+          }
+        }
+      });
     } catch (err: any) {
       sipLog.error("session", `accept failed: ${err?.message || err}`);
       finishCall("failed");
     }
-  }, [incoming, line, member, microphoneId, onEstablished, finishCall, resetCall, setCallState]);
+  }, [incoming, line, member, microphoneId, onEstablished, finishCall, resetCall, setCallState, toastError]);
 
   const decline = useCallback(() => {
     try { incoming?.session?.reject?.({ statusCode: 486 }); } catch { /* gone */ }
@@ -1281,7 +1368,10 @@ export function DialerProvider({ children }: { children: ReactNode }) {
         listeners.forEach((fn) => fn("Terminated"));
       },
     };
-    setIncoming({ session: mockSession, number, name });
+    callerLookupSession.current = mockSession;
+    const result = { matches: [], loading: false, error: null };
+    setCallerLookup(result);
+    setIncoming({ session: mockSession, number, name, lookup: Promise.resolve(result) });
     setIsOpen(true);
   }, []);
 
@@ -1297,6 +1387,10 @@ export function DialerProvider({ children }: { children: ReactNode }) {
     setLine: setLineId,
     registered,
     phoneAudio,
+    inboundEnabled,
+    inboundOnline,
+    inboundError,
+    setInboundEnabled,
     state,
     target,
     direction,
@@ -1317,6 +1411,7 @@ export function DialerProvider({ children }: { children: ReactNode }) {
     failure,
     recWarning,
     incoming: incoming ? { number: incoming.number, name: incoming.name } : null,
+    callerLookup,
     saveLabel: options.saveLabel ?? "Done",
     saving,
     session: sessionRef.current,
@@ -1333,8 +1428,8 @@ export function DialerProvider({ children }: { children: ReactNode }) {
     saveSummary,
     discardSummary,
     simulateIncomingCall,
-  }), [isOpen, pinned, setPinned, lines, line, setLineId, registered, phoneAudio, state, target, direction, duration, muted, held,
-    outcome, notes, setNotes, notesSaved, notesError, failure, recWarning, incoming, options.saveLabel, saving,
+  }), [isOpen, pinned, setPinned, lines, line, setLineId, registered, phoneAudio, inboundEnabled, inboundOnline, inboundError, setInboundEnabled, state, target, direction, duration, muted, held,
+    outcome, notes, setNotes, notesSaved, notesError, failure, recWarning, incoming, callerLookup, options.saveLabel, saving,
     legs, maxLines, dial, dialMany, hangup, mute, hold, sendDtmf, accept, decline, saveSummary, discardSummary, simulateIncomingCall]);
 
   return (

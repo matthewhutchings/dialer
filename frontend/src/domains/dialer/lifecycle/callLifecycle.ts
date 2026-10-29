@@ -108,6 +108,16 @@ export class CallLifecycle {
       // itself; log it so a stuck "in use" number can be traced.
       sipLog.warn("app", `number release failed (it frees itself when the claim goes stale): ${err?.message || err}`);
     }
+
+  }
+
+  async associateContact(prospectId: string | null, leadId: string | null): Promise<void> {
+    this.ctx.prospectId = prospectId;
+    this.ctx.leadId = leadId;
+    if (this.ctx.simulated) return;
+    const id = await this.ensureRow();
+    if (!id) throw new Error("Could not save the caller's record association");
+    await api.calls.update(id, { agencyProspectId: prospectId, agencyLeadId: leadId });
   }
 
   /**

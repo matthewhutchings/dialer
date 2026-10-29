@@ -21,3 +21,10 @@ test("invalid forwarding headers do not replace SIP caller identity", () => {
     remoteIdentity: { uri: { user: "123" } },
   }), { number: "123", name: "123" });
 });
+
+test("withheld forwarded callers never inherit the business line's CRM identity", () => {
+  assert.deepEqual(incomingCaller({
+    request: { getHeader: () => "anonymous" },
+    remoteIdentity: { uri: { user: "+441234567890" }, displayName: "Business" },
+  }), { number: "Withheld", name: "Withheld caller" });
+});

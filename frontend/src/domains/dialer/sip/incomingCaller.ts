@@ -5,6 +5,7 @@ interface IncomingSession {
 
 export function incomingCaller(session: IncomingSession): { number: string; name: string } {
   const original = session.request?.getHeader("X-Dialer-Original-Caller");
+  if (original === "anonymous") return { number: "Withheld", name: "Withheld caller" };
   if (original && /^\+[1-9]\d{6,14}$/.test(original)) {
     return { number: original, name: original };
   }

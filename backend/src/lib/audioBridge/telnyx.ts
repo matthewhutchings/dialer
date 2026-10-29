@@ -60,8 +60,9 @@ export const telnyxBridgeCalls = {
       client_state: encodeState(params.state),
       timeout_secs: params.timeoutSecs ?? 30,
       ...(params.commandId ? { command_id: params.commandId } : {}),
-      ...(params.callerNumber && /^sips?:/i.test(params.to) && /^\+[1-9]\d{6,14}$/.test(params.callerNumber)
-        ? { custom_headers: [{ name: "X-Dialer-Original-Caller", value: params.callerNumber }] }
+      ...(params.state.kind === "inbound" && /^sips?:/i.test(params.to)
+        ? { custom_headers: [{ name: "X-Dialer-Original-Caller",
+            value: params.callerNumber && /^\+[1-9]\d{6,14}$/.test(params.callerNumber) ? params.callerNumber : "anonymous" }] }
         : {}),
       ...(params.linkTo
         ? { link_to: params.linkTo, bridge_on_answer: true, park_after_unbridge: "self" }

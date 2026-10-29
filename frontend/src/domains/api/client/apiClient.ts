@@ -36,6 +36,29 @@ export interface AudioSessionView {
   error: string | null;
 }
 
+export interface InboundRoutingSettings {
+  fallbackPhone: string;
+  holdAudioUrl: string;
+}
+
+export interface InboundRoutingConfig extends InboundRoutingSettings {
+  inboundNumber: string;
+  browserAvailable: boolean;
+}
+
+export interface CallerMatch {
+  id: string;
+  type: "prospect" | "lead" | "person";
+  name: string;
+  company: string | null;
+  email: string | null;
+  jobTitle: string | null;
+  prospectId: string | null;
+  leadId: string | null;
+  country: string | null;
+  campaignId: string | null;
+}
+
 /** A named set of contact filters saved to the member's account. */
 export interface SavedFilterView {
   id: string;
@@ -269,6 +292,7 @@ export const api = {
 
   /** Paged contacts (prospects + leads); see lib/contacts.ts. */
   contacts: {
+    caller: (number: string) => request<{ matches: CallerMatch[] }>(`/api/contacts/caller?${new URLSearchParams({ number })}`),
     page: (params: string) => request<unknown>(`/api/prospects/page?${params}`),
     /** Every contact matching the filters (id and type), for "Select all". */
     ids: (params: string) => request<{ ids: { id: string; type: "prospect" | "lead" | "person" }[]; truncated: boolean }>(`/api/prospects/ids?${params}`),
@@ -315,6 +339,11 @@ export const api = {
   },
 
   audioSessions: {
+    inboundConfig: () => request<InboundRoutingConfig>("/api/audio-sessions/inbound-config"),
+    saveInboundConfig: (data: InboundRoutingSettings) =>
+      request<InboundRoutingSettings>("/api/audio-sessions/inbound-config", {
+        method: "PUT", body: JSON.stringify(data),
+      }),
     presence: (data: { instanceId: string; registered: boolean }) =>
       request<void>("/api/audio-sessions/presence", { method: "POST", body: JSON.stringify(data) }),
     config: () =>

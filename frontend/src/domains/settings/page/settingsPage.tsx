@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { BarChart3, Check, Clock, FlaskConical, Headphones, LogOut, Monitor, Moon, Palette, PhoneOutgoing, SkipForward, Sun, Timer, User, type IconComponent } from "@/domains/ui/icons";
 import { InfoTip, TipCard, type TipSpec } from "@/domains/ui/infoTip";
 import { AudioSourceSettings } from "@/domains/dialer/audio";
+import { InboundSettings } from "@/domains/dialer/inbound/inboundSettings";
 import { SectionTitle } from "@/domains/ui/sectionTitle";
 import { TabBar, type TabDef } from "@/domains/ui/tabBar";
 import { ReportCard } from "@/domains/reports/parts";
@@ -133,11 +134,12 @@ function ThemePreview({ dark }: { dark: boolean }) {
   );
 }
 
-type SettingsTab = "appearance" | "calling" | "audio" | "reports" | "experimental" | "account";
+type SettingsTab = "appearance" | "calling" | "audio" | "inbound" | "reports" | "experimental" | "account";
 const SETTINGS_TABS: TabDef<SettingsTab>[] = [
   { key: "appearance", label: "Appearance", icon: Palette },
   { key: "calling", label: "Calling", icon: PhoneOutgoing },
-  { key: "audio", label: "Audio Source", icon: Headphones },
+  { key: "audio", label: "Outbound Audio", icon: Headphones },
+  { key: "inbound", label: "Inbound Calls", icon: Headphones },
   { key: "reports", label: "Reports", icon: BarChart3 },
   { key: "experimental", label: "Experimental", icon: FlaskConical },
   { key: "account", label: "Account", icon: User },
@@ -276,12 +278,12 @@ export function SettingsPage() {
 
         {tab === "audio" && (
           <ReportCard
-            title="Audio Source"
+            title="Outbound Audio"
             unit="Calls"
             tip={{
               title: "Audio Source",
               icon: Headphones,
-              what: "How you hear and talk on calls: this computer's mic and speakers, or your phone.",
+              what: "How you hear and talk on outbound calls: this computer's mic and speakers, or your phone. Inbound availability is separate.",
               formula: ["Your phone", "+", "Telnyx", "=", "One call leg per session"],
               use: "Call me / Dial in need the Telnyx Call Control app and dial-in number configured on the server.",
             }}
@@ -289,6 +291,13 @@ export function SettingsPage() {
             <AudioSourceSettings />
           </ReportCard>
         )}
+
+        {tab === "inbound" && <ReportCard title="Inbound Calls" unit="Phone system" tip={{
+          title: "Inbound Calls",
+          what: "Control your browser availability separately from outbound audio, and configure the shared no-agents fallback.",
+        }}>
+          <InboundSettings />
+        </ReportCard>}
 
         {tab === "reports" && (
           <>

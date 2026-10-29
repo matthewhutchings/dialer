@@ -43,6 +43,8 @@ import { useExperimental } from "@/domains/app/experimental";
 import { CountryFlag } from "@/domains/country/badge";
 import { DispositionBadge, DispositionIcon } from "@/domains/calls/disposition";
 import { AudioSourceSettings } from "@/domains/dialer/audio";
+import { InboundAvailability, InboundSettings } from "@/domains/dialer/inbound/inboundSettings";
+import { callerRecordPath } from "@/domains/dialer/inbound/callerMatch";
 import { CallScriptViewer } from "@/domains/scripts/viewer";
 import { usePersistedState } from "@/domains/app/persistedState";
 import { DEFAULT_UNANSWERED_TIMEOUT_SECONDS, UNANSWERED_TIMEOUT_CHOICES, getUnansweredTimeoutSeconds, setUnansweredTimeoutSeconds } from "@/domains/app/config";
@@ -88,16 +90,18 @@ const STATE_DOT: Record<CallState, string> = {
   ended: "bg-red-500",
 };
 
-/** Top-bar phone button. The green dot means the dialer is registered for calls. */
+/** The green dot indicates acknowledged inbound availability, not outbound audio. */
 export function DialerTopButton() {
-  const { toggle, isOpen, registered, phoneAudio, state, duration } = useDialer();
-  const ready = registered || phoneAudio;
+  const { toggle, isOpen, inboundOnline, state, duration } = useDialer();
+  const ready = inboundOnline;
   const live = isLive(state);
   return (
+    <div className="flex items-center gap-2">
+    <InboundAvailability />
     <button
       data-dialer-toggle
       onClick={toggle}
-      title={ready ? "Dialer (ready for calls)" : "Dialer"}
+      title={ready ? "Dialer (online for inbound calls)" : "Dialer (offline for inbound calls)"}
       aria-pressed={isOpen}
       className={`relative h-7 inline-flex items-center gap-1.5 px-1.5 rounded-md transition ${
         isOpen ? "bg-[var(--ods-hover)]" : "hover:bg-[var(--ods-hover)]"
@@ -110,6 +114,7 @@ export function DialerTopButton() {
         aria-hidden="true"
       />
     </button>
+    </div>
   );
 }
 
@@ -387,6 +392,7 @@ function IncomingBanner() {
         <div className="text-[12px] text-[var(--ods-text-tertiary)]">Incoming call</div>
         <div className="text-[14px] font-semibold truncate">{incoming.name}</div>
         {incoming.name !== incoming.number && <div className="text-[12px] tabular-nums text-[var(--ods-text-secondary)]">{incoming.number}</div>}
+        <CallerDetails />
       </div>
       <button onClick={decline} title="Decline" className="w-9 h-9 rounded-md bg-red-600 hover:bg-red-700 text-white flex items-center justify-center">
         <PhoneOff className="w-4 h-4" />
@@ -394,6 +400,36 @@ function IncomingBanner() {
       <button onClick={() => void accept()} title="Accept" className="w-9 h-9 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center">
         <Phone className="w-4 h-4" />
       </button>
+    </div>
+  );
+}
+
+function CallerDetails() {
+  const { callerLookup, incoming, target } = useDialer();
+  const navigate = useNavigate();
+  if (!callerLookup) return null;
+  if (callerLookup.loading) return <p role="status" className="text-[12px]">Looking up caller in CRM...</p>;
+  if (callerLookup.error) return <p role="alert" className="text-[12px] text-red-600">{callerLookup.error}</p>;
+  if (!callerLookup.matches.length) return <p className="text-[12px] text-[var(--ods-text-tertiary)]">
+    {/^\+[1-9]\d{6,14}$/.test(incoming?.number ?? target?.phone ?? "")
+      ? "No matching CRM record" : "Caller number unavailable for CRM matching"}
+  </p>;
+  return (
+    <div className="text-[12px] space-y-1">
+      {callerLookup.matches.length > 1 && <p>Multiple records share this number. Call not automatically linked.</p>}
+      {callerLookup.matches.map((match) => {
+        const path = callerRecordPath(match);
+        return (
+          <div key={`${match.type}:${match.id}`}>
+            <div>{match.name}{match.company && match.company !== match.name ? ` - ${match.company}` : ""}</div>
+            {match.jobTitle && <div>{match.jobTitle}</div>}
+            {match.email && <div className="break-all">{match.email}</div>}
+            {path ? <button className="underline text-[var(--ods-brand-600)]" onClick={() => navigate(path)}>
+              Open {match.type === "person" ? "company / person" : match.type} record
+            </button> : <div>Person has no linked company page</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1102,6 +1138,7 @@ function CallHeader() {
         <div className="text-[15px] font-semibold truncate max-w-full">{name}</div>
       )}
       {target?.phone && name !== target.phone && <div className="text-[13px] tabular-nums text-[var(--ods-text-secondary)]">{target.phone}</div>}
+      {direction === "inbound" && <CallerDetails />}
       <div className="flex items-center gap-2">
         <Chip dot={STATE_DOT[state]}>{direction === "inbound" && state !== "ended" ? `Inbound · ${STATE_LABEL[state]}` : STATE_LABEL[state]}</Chip>
         <Chip icon={Clock}>
@@ -1372,11 +1409,13 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
       <div className="flex-1 min-h-0 overflow-y-auto p-4 text-[13px] text-[var(--ods-text-secondary)] space-y-4">
         <p>
           Caller ID is the <b className="text-[var(--ods-text-primary)]">Calling from</b> number at the top. Audio below applies to every call on
-          this browser.
+          outbound calls on this browser. Inbound availability is separate.
         </p>
         <RingTimeSetting />
         <AutoQueueSwitch />
+        <h3 className="text-[15px] font-semibold">Outbound audio</h3>
         <AudioSourceSettings />
+        <InboundSettings />
       </div>
     </div>
   );

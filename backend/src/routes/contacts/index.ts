@@ -4,6 +4,7 @@ import { getTwenty, updateTwenty } from "../../lib/twenty/client/index.js";
 import { resolveActor } from "../../lib/twenty/actor/index.js";
 import { createLogger } from "../../lib/logger/index.js";
 import type { AgencyPersonRecord } from "../people/helpers.js";
+import { canonicalPhone, matchCaller } from "../../lib/twenty/callerMatching/index.js";
 
 const router = Router();
 router.use(authMiddleware);
@@ -12,6 +13,20 @@ const log = createLogger("contacts");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_CAMPAIGN_ASSIGNMENT = 5000;
 const CONCURRENCY = 10;
+
+router.get("/caller", async (req, res) => {
+  const number = typeof req.query.number === "string" ? req.query.number : "";
+  if (!/^\+[1-9]\d{6,14}$/.test(number) || !canonicalPhone(number)) {
+    res.status(400).json({ error: "A valid international caller number is required" });
+    return;
+  }
+  try {
+    res.json({ matches: await matchCaller(number) });
+  } catch (err) {
+    log.error("Caller lookup failed", err);
+    res.status(502).json({ error: "Could not match this caller to CRM records. You can still answer the call." });
+  }
+});
 
 type ContactType = "prospect" | "lead" | "person";
 type ContactRef = { id: string; type: ContactType };
