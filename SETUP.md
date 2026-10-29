@@ -198,7 +198,8 @@ still end the call immediately. Never interpret queued speech as proof it was he
 
 ### Named AI agent in team reports
 
-Open **Settings -> Reports -> AI agent** to save a team-wide display name.
+Open **Settings -> AI Agents -> AI identity** (also available under Reports)
+to save a team-wide display name.
 This reporting-only identity does not create a workspace login or change the
 spoken introduction. The name is stored in Twenty on the configured agency
 caller phone; saving adds only the `agencyPhone.aiAgentName` field if needed.
@@ -210,6 +211,86 @@ under this identity rather than the human who triggered them. Human
 regroups the same AI calls under the new name, without rewriting history or
 splitting the agent's metrics. The member filter, charts, daily grids and Team
 Performance use the same grouping and conversation threshold as human calls.
+
+### Platform AI controls and automatic approved queue
+
+Open **Settings -> AI Agents** for shared team controls. Inbound reception and
+outbound discovery have separate enable switches and business guidance.
+Outbound off blocks both manual and automatic **new** outbound AI calls;
+inbound off restores the existing non-AI inbound routing. Neither switch ends
+a live conversation. Deployment `AI_VOICE_ENABLED` and
+`AI_VOICE_INBOUND_ENABLED` remain authoritative kill switches: the platform
+cannot override a disabled deployment.
+
+Guidance applies when the next assistant starts; it is reference material,
+not a replacement for the fixed identity, consent, commercial, booking and
+handoff safeguards. The reporting name still does not change the introduction.
+Provider models, voices, credentials and webhook provisioning remain deployment
+configuration; business guidance and operation are controlled in the platform.
+
+Saving AI controls narrowly provisions `agencyPhone.aiAgentSettings`,
+`agencyPhone.aiAutomationRun` and `agencyAiQueueEntry` in Twenty. Settings,
+queue, audit and progress survive browser closure, deployment and restart.
+Existing inbound/outbound behaviour is retained until settings are saved;
+automatic calling defaults to **off**, and no contacts are enrolled implicitly.
+
+1. Select **Daily calls** or **Daily confirmed bookings**, set its target
+   (initially 10), and save. Only one mode is active; the other target is retained.
+2. Open each approved contact and choose **Approve for AI queue**. Record
+   explicit permission for an automated AI sales call, or use an internal
+   server-allowlisted test number. A public company number is not consent.
+3. With outbound enabled, a goal selected and not paused, approved entries run
+   automatically Monday-Friday, **9 am-5 pm Europe/London**, excluding England
+   and Wales bank holidays. Holiday-check failures block dispatch.
+4. **Pause automation** stops future launches, not an already starting/live
+   call. **End AI call** separately requests hangup. **Cancel approval** removes
+   a pending attempt. **Approve another attempt** is an explicit retry;
+   failed, completed and uncertain entries are never automatically redialed.
+
+The approved phone is snapshotted. Opt-outs and the number are checked again
+before dispatch, and human number reservations take precedence. Changed
+numbers require reviewing the contact and its permission again. Preparation
+failures are shown in the queue and require explicit retry; uncertain dials
+retain their call/phone reservations until provider events or verified recovery.
+
+Daily goals include **all outbound AI activity**, including manually requested
+AI calls, not inbound or human calls. Days reset at London midnight (DST-aware).
+Call counts include submitted/starting/uncertain attempts for safety, not
+preparation failures. Booking counts use a persisted provider-confirmed result
+and encrypted confirmation timestamp, not the scheduled appointment date.
+Repeated booking deliveries count once. Historical bookings without that
+timestamp are excluded rather than assigning a guessed confirmation day.
+In booking mode there is **no additional call cap**: it may work through the
+entire finite approved queue to reach the booking goal. Pending entries carry
+forward to the next working day when a goal is reached.
+
+#### Browser-independent GitHub scheduler (Vercel Hobby)
+
+The `AI approved call queue` GitHub Actions workflow runs approximately every
+five minutes on weekdays during the UTC window covering GMT/BST working hours.
+The backend enforces exact London hours, holidays, goals and one live outbound
+AI call. GitHub may delay scheduled runs; this is not a guaranteed five-minute
+cadence. Schedules only run from the repository's default branch. Ensure Actions
+is enabled; GitHub can disable public-repository schedules after 60 days without
+repository activity. Monitor the platform's last background check and workflow.
+
+Set the **same new random secret of at least 32 characters** in Vercel production
+`AI_AUTOMATION_CRON_SECRET` and the deployment repository's Actions secret of
+that name. Do not reuse the voice webhook secret or put either secret in source.
+The workflow POSTs `/api/ai-calls/automation/run` with the scheduler Bearer
+credential. Browser JWTs cannot invoke this route; all settings/queue/recovery
+routes require a signed-in workspace member for writes. Responses and contact
+data are not printed in workflow logs. `workflow_dispatch` permits a manual
+background check, but still honours permissions, hours, pause and goals.
+
+Unique durable worker and call reservations prevent concurrent jobs or repeated
+deliveries from duplicating dials. Each queue entry ID is its stable Telnyx
+command/request ID. A crash does not silently expire a call reservation.
+After a worker has been stalled for at least 15 minutes, **Recover stalled
+scheduler** may release only the worker reservation, and only if there is no
+live/uncertain outbound AI call reservation. It cannot clear phone/call locks.
+An interrupted entry without a call becomes visibly failed, never auto-retried.
+Investigate provider state before recovering any uncertain call.
 
 ### Call lifecycle and recovery
 

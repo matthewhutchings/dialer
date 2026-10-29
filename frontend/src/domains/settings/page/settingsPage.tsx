@@ -15,6 +15,7 @@ import { signOut } from "@/domains/auth/session";
 import { useTheme, type ThemeMode } from "@/domains/app/theme";
 import { DEFAULT_CALL_GOAL, DEFAULT_CONVERSATION_SECONDS, useReportSettings } from "@/domains/reports/data";
 import { AiAgentSettings } from "./aiAgentSettings";
+import { AiAutomationSettings } from "./aiAutomationSettings";
 
 /** What each Reports number means; shown in Settings so the definitions live next to the goals. */
 function reportDefinitions(seconds: number, goal: number): TipSpec[] {
@@ -135,12 +136,13 @@ function ThemePreview({ dark }: { dark: boolean }) {
   );
 }
 
-type SettingsTab = "appearance" | "calling" | "audio" | "inbound" | "reports" | "experimental" | "account";
+type SettingsTab = "appearance" | "calling" | "audio" | "inbound" | "ai" | "reports" | "experimental" | "account";
 const SETTINGS_TABS: TabDef<SettingsTab>[] = [
   { key: "appearance", label: "Appearance", icon: Palette },
   { key: "calling", label: "Calling", icon: PhoneOutgoing },
   { key: "audio", label: "Outbound Audio", icon: Headphones },
   { key: "inbound", label: "Inbound Calls", icon: Headphones },
+  { key: "ai", label: "AI Agents", icon: User },
   { key: "reports", label: "Reports", icon: BarChart3 },
   { key: "experimental", label: "Experimental", icon: FlaskConical },
   { key: "account", label: "Account", icon: User },
@@ -205,8 +207,8 @@ export function SettingsPage() {
         <SectionTitle
           as="h1"
           title="Settings"
-          pill="Saved on this browser"
-          info={{ title: "Settings", icon: Palette, what: "Appearance, audio source, report goals and your account.", use: "Changes save as you make them." }}
+          pill={["ai", "inbound"].includes(tab) ? "Shared team settings" : "Browser and team settings"}
+          info={{ title: "Settings", icon: Palette, what: "Appearance, audio, AI agents, report goals and your account.", use: "AI and phone-system settings are shared. Appearance and report targets apply to this browser." }}
         />
       </div>
 
@@ -299,6 +301,11 @@ export function SettingsPage() {
         }}>
           <InboundSettings />
         </ReportCard>}
+
+        {tab === "ai" && <>
+          <ReportCard title="AI identity" unit="Shared reporting name" tip={{ title: "AI identity", what: "A shared reporting name, separate from human team members and the spoken introduction." }}><AiAgentSettings /></ReportCard>
+          <AiAutomationSettings />
+        </>}
 
         {tab === "reports" && (
           <>

@@ -163,6 +163,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   aiCalls: {
+    settings: () => request<AiAgentSettings>("/api/ai-calls/settings"),
+    saveSettings: (settings: AiAgentSettings) => request<AiAgentSettings>("/api/ai-calls/settings", { method: "PUT", body: JSON.stringify(settings) }),
+    automation: () => request<AiAutomationView>("/api/ai-calls/automation"),
+    approveQueue: (input: AiCallInput) => request<AiQueueEntry>("/api/ai-calls/queue", { method: "POST", body: JSON.stringify(input) }),
+    cancelQueue: (id: string) => request<AiQueueEntry>(`/api/ai-calls/queue/${id}/cancel`, { method: "POST" }),
+    retryQueue: (id: string, requestId: string) => request<AiQueueEntry>(`/api/ai-calls/queue/${id}/retry`, { method: "POST", body: JSON.stringify({ requestId }) }),
+    recoverAutomation: () => request<{ recovered: boolean }>("/api/ai-calls/automation/recover", { method: "POST" }),
     profile: () => request<AiAgentProfile>("/api/ai-calls/profile"),
     saveProfile: (profile: AiAgentProfile) => request<AiAgentProfile>("/api/ai-calls/profile", { method: "PUT", body: JSON.stringify(profile) }),
     config: () => request<AiVoiceConfigView>("/api/ai-calls/config"),
@@ -462,4 +469,4 @@ export const api = {
       ),
   },
 };
-import type { AiAgentProfile, AiCallInput, AiCallView, AiVoiceConfigView } from "@dialer/shared";
+import type { AiAgentProfile, AiAgentSettings, AiAutomationView, AiQueueEntry, AiCallInput, AiCallView, AiVoiceConfigView } from "@dialer/shared";

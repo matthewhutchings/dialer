@@ -20,6 +20,7 @@ export interface VoiceLock {
   id: string;
   lockKey: string | null;
   owner: string;
+  createdAt?: string;
 }
 
 export async function findLock(key: string): Promise<VoiceLock | null> {

@@ -11,6 +11,7 @@ import { useToast } from "@/domains/ui/toast";
 
 export function AiCallControl({ contact }: { contact: Contact }) {
   const [open, setOpen] = useState(false);
+  const [queueApproval, setQueueApproval] = useState(false);
   const [permission, setPermission] = useState<AiCallInput["permission"]>("internal_test");
   const [evidence, setEvidence] = useState("");
   const [busy, setBusy] = useState(false);
@@ -68,6 +69,21 @@ export function AiCallControl({ contact }: { contact: Contact }) {
       setBusy(false);
     }
   };
+  const approve = async () => {
+    setBusy(true);
+    try {
+      request.current ??= {
+        requestId: crypto.randomUUID(), contactId: contact.id, contactType: contact.type,
+        permission, consentEvidence: evidence.trim(),
+      };
+      await api.aiCalls.approveQueue(request.current);
+      setOpen(false);
+      success("Contact approved for AI queue", "If a daily goal is enabled and automation is not paused, the agent can call during UK business hours.");
+      await queryClient.invalidateQueries({ queryKey: ["ai-automation"] });
+    } catch (error) {
+      toastError("Queue approval not confirmed", describeError(error).detail);
+    } finally { setBusy(false); }
+  };
   const stop = async () => {
     if (!call) return;
     setStopping(true);
@@ -109,11 +125,18 @@ export function AiCallControl({ contact }: { contact: Contact }) {
       ) : (
         <Button block disabled={!config.data?.ready || !contact.phone || blocked || config.isError} onClick={() => {
           request.current = null;
+          setQueueApproval(false);
           setEvidence("");
           setOpen(true);
         }}>Call with AI</Button>
       )}
-      <Modal open={open} onClose={() => !busy && setOpen(false)} title="Authorise AI call">
+      <Button block variant="secondary" disabled={!contact.phone || blocked || busy} onClick={() => {
+        request.current = null;
+        setQueueApproval(true);
+        setEvidence("");
+        setOpen(true);
+      }}>Approve for AI queue</Button>
+      <Modal open={open} onClose={() => !busy && setOpen(false)} title={queueApproval ? "Approve automatic AI call" : "Authorise AI call"}>
         <div className="space-y-4">
           <p className="text-[14px]">Call {contact.company || contact.name} on {contact.phone}. The assistant identifies itself as AI. It may book a free meeting, but cannot agree discounts or contracts.</p>
           <label className="block text-[13px] space-y-1">
@@ -128,8 +151,9 @@ export function AiCallControl({ contact }: { contact: Contact }) {
             <textarea className={inputClass} value={evidence} maxLength={1000} disabled={busy || !!request.current} onChange={(event) => setEvidence(event.target.value)} />
           </label>
           <p className="text-[12px] text-[var(--ods-text-secondary)]">A public company phone number is not consent. This permission record is saved with the call. Recording is not enabled by this feature.</p>
-          <Button block variant="primary" busy={busy} disabled={evidence.trim().length < 10} onClick={() => void start()}>
-            {request.current ? "Recover previous call request" : "Authorise and call"}
+          {queueApproval && <p className="text-[13px]">This approves one automatic attempt. A configured daily goal starts the approved queue automatically during UK working hours, without this page open. Manage or cancel approvals in Settings → AI Agents.</p>}
+          <Button block variant="primary" busy={busy} disabled={evidence.trim().length < 10} onClick={() => void (queueApproval ? approve() : start())}>
+            {queueApproval ? (request.current ? "Recover queue approval" : "Approve one automatic attempt") : request.current ? "Recover previous call request" : "Authorise and call"}
           </Button>
         </div>
       </Modal>

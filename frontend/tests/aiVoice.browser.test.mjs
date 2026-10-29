@@ -31,6 +31,11 @@ test("AI controls preserve permission and named AI reports stay separate from th
   let activeCall = null;
   let stopped = false;
   let agentName = "Fewzen AI";
+  let agentSettings = {
+    inboundEnabled: true, outboundEnabled: true, inboundGuidance: "", outboundGuidance: "",
+    goalMode: "off", dailyCallGoal: 10, dailyBookingGoal: 10, paused: false,
+  };
+  const queue = [];
   await page.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem("cold-dialer-token", `test.${btoa(JSON.stringify({
@@ -54,6 +59,25 @@ test("AI controls preserve permission and named AI reports stay separate from th
       holdAudioUrl: "https://example.test/hold.mp3", browserAvailable: true, aiReceptionistEnabled: true,
     };
     if (path === "/api/ai-calls/config") body = { enabled: true, ready: true, reason: null, activeCall };
+    if (path === "/api/ai-calls/settings") {
+      if (request.method() === "PUT") agentSettings = request.postDataJSON();
+      body = agentSettings;
+    }
+    if (path === "/api/ai-calls/automation") body = {
+      schemaReady: true, schedulerConfigured: true, schedulerStalled: false, settings: agentSettings,
+      day: "2026-10-29", calls: 1, bookings: 0, target: agentSettings.goalMode === "calls" ? agentSettings.dailyCallGoal : agentSettings.goalMode === "bookings" ? agentSettings.dailyBookingGoal : null,
+      goalReached: false, queue, activeCall: activeCall?.active ? activeCall : null,
+      lastRun: { checkedAt: "2026-10-29T12:00:00Z", status: "goal_off", detail: "Choose a daily goal." },
+    };
+    if (path === "/api/ai-calls/queue" && request.method() === "POST") {
+      const approval = request.postDataJSON();
+      body = { ...approval, id: approval.requestId, name: "Fictional Company", phone: "+442079460456", approvedByMemberId: "test-member", approvedByName: "Test Agent", state: "QUEUED", callId: null, error: null, createdAt: "2026-10-29T12:00:00Z" };
+      queue.push(body);
+    }
+    if (path.startsWith("/api/ai-calls/queue/") && path.endsWith("/cancel")) {
+      body = queue.find((entry) => path.includes(entry.id));
+      body.state = "CANCELLED";
+    }
     if (path === "/api/ai-calls/profile") {
       if (request.method() === "PUT") agentName = request.postDataJSON().name;
       body = { name: agentName };
@@ -100,6 +124,39 @@ test("AI controls preserve permission and named AI reports stay separate from th
   assert.equal(stopped, true);
   await page.getByText("Telnyx confirmed the call ended. The number has been released.", { exact: true }).waitFor();
   assert.equal(await page.getByText("Waiting for Telnyx to confirm the call has ended.", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Approve for AI queue", exact: true }).click();
+  await page.getByLabel("Calling permission").selectOption("consented");
+  await page.getByLabel("Permission evidence (who, when, and how)").fill("Prospect gave explicit permission for one automatic AI call.");
+  await page.getByRole("button", { name: "Approve one automatic attempt", exact: true }).click();
+  await page.getByText("Contact approved for AI queue", { exact: true }).waitFor();
+  assert.equal(queue.length, 1);
+  assert.equal(starts.length, 2, "queue approval must not immediately dial");
+  await page.goto(`http://127.0.0.1:${address.port}/settings?tab=ai`);
+  await page.getByRole("tab", { name: "AI Agents", exact: true }).waitFor();
+  try {
+    await page.getByLabel("Goal mode", { exact: true }).selectOption("bookings", { timeout: 10000 });
+  } catch (error) {
+    console.error("AI settings browser state:", await page.locator("body").innerText(), errors);
+    throw error;
+  }
+  await page.getByLabel("Daily booking goal", { exact: true }).fill("10");
+  await page.getByLabel("Inbound business guidance", { exact: true }).fill("Explain our automation services and offer the four inbound options.");
+  await page.getByLabel("Outbound business guidance", { exact: true }).fill("Ask one focused question about manual reporting.");
+  await page.getByText("Booking mode has no separate daily call cap.", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "Save AI controls", exact: true }).click();
+  await page.getByText("AI controls updated for the team.", { exact: true }).waitFor();
+  assert.equal(agentSettings.goalMode, "bookings");
+  assert.equal(agentSettings.dailyBookingGoal, 10);
+  await page.reload();
+  assert.equal(await page.getByLabel("Goal mode", { exact: true }).inputValue(), "bookings");
+  assert.equal(await page.getByLabel("Outbound business guidance", { exact: true }).inputValue(), "Ask one focused question about manual reporting.");
+  await page.getByRole("button", { name: "Pause automation", exact: true }).click();
+  await page.getByRole("button", { name: "Resume automation", exact: true }).waitFor();
+  assert.equal(agentSettings.paused, true);
+  assert.equal(agentSettings.inboundEnabled, true);
+  await page.getByRole("button", { name: "Cancel approval", exact: true }).click();
+  await page.getByText("cancelled · +442079460456", { exact: true }).waitFor();
+  assert.equal(queue[0].state, "CANCELLED");
   await page.goto(`http://127.0.0.1:${address.port}/settings?tab=reports`);
   const nameInput = page.getByLabel("AI agent name", { exact: true });
   await nameInput.fill("Discovery Scout");

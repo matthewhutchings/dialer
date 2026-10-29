@@ -11,13 +11,14 @@ import { decryptState, encryptState, UUID, VoiceError, configurationError } from
 import { preloadCalendar } from "./booking.js";
 import { businessHours } from "./businessHours.js";
 import { withVoiceLock } from "./locks.js";
+import { readAgentSettings } from "./settings.js";
 
 const log = createLogger("inbound-ai");
 const E164 = /^\+[1-9]\d{6,14}$/;
 const encode = (value: Record<string, unknown>) => Buffer.from(JSON.stringify(value)).toString("base64");
 
-export function inboundAiEnabled(): boolean {
-  return process.env.AI_VOICE_INBOUND_ENABLED === "true";
+export async function inboundAiEnabled(): Promise<boolean> {
+  return process.env.AI_VOICE_INBOUND_ENABLED === "true" && (await readAgentSettings()).inboundEnabled;
 }
 
 function inboundRequestId(ccid: string): string {
@@ -150,8 +151,8 @@ export async function handleInboundVoiceEvent(event: string, payload: Record<str
     return false;
   }
   const config = bridgeConfig();
-  if (!inboundAiEnabled() || event !== "call.initiated" || payload.direction !== "incoming" ||
-      decoded || typeof payload.to !== "string" || payload.to !== config.inboundNumber) return false;
+  if (event !== "call.initiated" || payload.direction !== "incoming" ||
+      decoded || typeof payload.to !== "string" || payload.to !== config.inboundNumber || !await inboundAiEnabled()) return false;
   const ccid = typeof payload.call_control_id === "string" ? payload.call_control_id : "";
   if (!ccid) throw new VoiceError(400, "Incoming AI call is missing a provider call ID.");
   const problem = configurationError(false);

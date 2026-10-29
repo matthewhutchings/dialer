@@ -7,4 +7,4 @@
 export * from "./oauth.js";
 export * from "./dialerQueue.js";
 export * from "./domains/index.js";
-export type { AiAgentProfile, AiCallInput, AiCallView, AiVoiceConfigView } from "./aiVoice.js";
+export type { AiAgentProfile, AiAgentSettings, AiQueueEntry, AiAutomationRun, AiAutomationView, AiCallInput, AiCallView, AiVoiceConfigView } from "./aiVoice.js";

@@ -1,0 +1,39 @@
+name: AI approved call queue
+
+on:
+  schedule:
+    # UTC includes both GMT and BST business hours. Backend enforces London hours and holidays.
+    - cron: "*/5 8-17 * * 1-5"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ai-approved-call-queue
+  cancel-in-progress: false
+
+jobs:
+  check-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check approved queue
+        env:
+          SCHEDULER_SECRET: ${{ secrets.AI_AUTOMATION_CRON_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$SCHEDULER_SECRET" ]; then
+            echo "::error::AI automation scheduler secret is missing."
+            exit 1
+          fi
+          # Never echo credentials, contact data or the backend response.
+          status=$(curl --silent --show-error --max-time 240 \
+            --output /dev/null --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer $SCHEDULER_SECRET" \
+            https://dialer.fewzen.com/api/ai-calls/automation/run)
+          if [ "$status" != "200" ] && [ "$status" != "409" ]; then
+            echo "::error::AI queue check failed (HTTP $status). Check AI Agents in the platform."
+            exit 1
+          fi
+          echo "AI queue check completed (HTTP $status)."

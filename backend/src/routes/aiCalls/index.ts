@@ -12,6 +12,8 @@ import type { AgencyPhone } from "../twenty/phones/types.js";
 import { meetingDetails } from "../../lib/aiVoice/booking.js";
 import { readAgentProfile, saveAgentProfile } from "../../lib/aiVoice/profile.js";
 import { runInboundTool } from "../../lib/aiVoice/inbound.js";
+import { prepareAutomationSchema, readAgentSettings, saveAgentSettings } from "../../lib/aiVoice/settings.js";
+import { approveQueue, automationView, cancelQueue, recoverAutomation, retryQueue, runAutomation, validSchedulerToken } from "../../lib/aiVoice/automation.js";
 
 const router = Router();
 const log = createLogger("ai-calls");
@@ -75,7 +77,51 @@ router.post("/tools/:tool", async (req, res) => {
   }
 });
 
+router.post("/automation/run", async (req, res) => {
+  if (!validSchedulerToken((req.get("Authorization") || "").replace(/^Bearer /, ""))) {
+    res.status(401).json({ error: "Invalid automation scheduler credential." });
+    return;
+  }
+  try {
+    await prepareAutomationSchema();
+    res.json(await runAutomation());
+  } catch (error) {
+    failure(res, error);
+  }
+});
+
 router.use(authMiddleware);
+router.get("/settings", async (_req, res) => {
+  try { res.json(await readAgentSettings()); } catch (error) { failure(res, error); }
+});
+router.put("/settings", async (req: AuthRequest, res) => {
+  if (!requireMember(req, res)) return;
+  try { res.json(await saveAgentSettings(req.body, await resolveActor(req))); } catch (error) { failure(res, error); }
+});
+router.get("/automation", async (_req, res) => {
+  try { res.json(await automationView()); } catch (error) { failure(res, error); }
+});
+router.post("/automation/recover", async (req: AuthRequest, res) => {
+  if (!requireMember(req, res)) return;
+  try {
+    await recoverAutomation();
+    res.json({ recovered: true });
+  } catch (error) { failure(res, error); }
+});
+router.post("/queue", async (req: AuthRequest, res) => {
+  const member = requireMember(req, res);
+  if (!member) return;
+  try { res.status(201).json(await approveQueue(req.body, member, await resolveActor(req))); } catch (error) { failure(res, error); }
+});
+router.post("/queue/:id/cancel", async (req: AuthRequest, res) => {
+  if (!requireMember(req, res)) return;
+  try { res.json(await cancelQueue(String(req.params.id))); } catch (error) { failure(res, error); }
+});
+router.post("/queue/:id/retry", async (req: AuthRequest, res) => {
+  const member = requireMember(req, res);
+  if (!member) return;
+  try { res.status(201).json(await retryQueue(String(req.params.id), req.body?.requestId, member, await resolveActor(req))); } catch (error) { failure(res, error); }
+});
 router.get("/profile", async (_req, res) => {
   try {
     res.json(await readAgentProfile());
@@ -93,9 +139,10 @@ router.put("/profile", async (req: AuthRequest, res) => {
 });
 router.get("/config", async (_req, res) => {
   try {
-    const reason = configurationError();
+    const enabled = voiceConfig().enabled && (await readAgentSettings()).outboundEnabled;
+    const reason = configurationError() || (!enabled ? "Outbound AI calling is switched off in Settings." : null);
     if (!reason) await verifyVoiceSchema();
-    res.json({ enabled: voiceConfig().enabled, ready: !reason, reason, activeCall: voiceConfig().enabled ? await activeVoiceCall() : null });
+    res.json({ enabled, ready: !reason, reason, activeCall: await activeVoiceCall() });
   } catch (error) {
     failure(res, error);
   }

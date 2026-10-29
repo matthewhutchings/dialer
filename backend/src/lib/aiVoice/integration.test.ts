@@ -24,6 +24,9 @@ const locks = await import("./locks.js");
 const { callToken, setupToken, decryptState, encryptState } = await import("./config.js");
 const { ASSISTANT_INSTRUCTIONS } = await import("./assistant.js");
 const { readAgentProfile, saveAgentProfile } = await import("./profile.js");
+const settingsApi = await import("./settings.js");
+const automation = await import("./automation.js");
+const { SCHEMA_OBJECTS } = await import("../twenty/schema/manifest.js");
 const { mapCall } = await import("../../routes/calls/helpers/mapCall.js");
 const inbound = await import("./inbound.js");
 type VoiceBriefing = import("./context.js").VoiceBriefing;
@@ -72,6 +75,8 @@ beforeEach(() => {
   calendarFails = false;
   uncertainTransfer = false;
   lostTaskResponse = false;
+  process.env.AI_VOICE_ENABLED = "true";
+  process.env.AI_AUTOMATION_CRON_SECRET = "test-only-scheduler-secret-at-least-32-characters";
   process.env.AI_VOICE_INBOUND_ENABLED = "false";
   process.env.TELNYX_INBOUND_AI_ASSISTANT_ID = "test-inbound-assistant";
   process.env.TELNYX_INBOUND_NUMBER = process.env.AGENCY_PHONE_NUMBER;
@@ -121,7 +126,8 @@ beforeEach(() => {
       return Response.json({ data: { objects: { edges: [
         { node: { id: "locks", nameSingular: "agencyVoiceLock", namePlural: "agencyVoiceLocks", fields: { edges: [{ node: { name: "lockKey", type: "TEXT", isActive: true, isUnique: true } }] } } },
         { node: { id: "calls", nameSingular: "agencyCall", namePlural: "agencyCalls", fields: { edges: [{ node: { name: "aiVoiceRequestId", type: "TEXT", isActive: true, isUnique: true } }] } } },
-        { node: { id: "phones", nameSingular: "agencyPhone", namePlural: "agencyPhones", fields: { edges: [{ node: { name: "aiAgentName", type: "TEXT", isActive: true } }] } } },
+        { node: { id: "phones", nameSingular: "agencyPhone", namePlural: "agencyPhones", fields: { edges: ["aiAgentName", "aiAgentSettings", "aiAutomationRun"].map((name) => ({ node: { name, type: name === "aiAgentName" ? "TEXT" : "RAW_JSON", isActive: true } })) } } },
+        { node: { id: "queue", nameSingular: "agencyAiQueueEntry", namePlural: "agencyAiQueueEntries", fields: { edges: SCHEMA_OBJECTS.find((object) => object.nameSingular === "agencyAiQueueEntry")!.fields.map((field) => ({ node: { name: field.name, type: field.type, isActive: true } })) } } },
       ] } } });
     }
     const [, , object, id] = url.pathname.split("/");
@@ -131,7 +137,7 @@ beforeEach(() => {
       if (object === "agencyVoiceLocks" && [...rows.values()].some((row) => row.lockKey && row.lockKey === body.lockKey)) {
         return Response.json({ error: "unique constraint" }, { status: 409 });
       }
-      const row = { ...body, id: typeof body.id === "string" ? body.id : randomUUID() };
+      const row = { ...body, createdAt: new Date(Date.now()).toISOString(), id: typeof body.id === "string" ? body.id : randomUUID() };
       rows.set(row.id, row);
       if (object === "tasks" && lostTaskResponse) {
         lostTaskResponse = false;
@@ -156,17 +162,27 @@ beforeEach(() => {
       return rows.has(id) ? Response.json({ data: rows.get(id) }) : Response.json({ error: "not found" }, { status: 404 });
     }
     const filter = url.searchParams.get("filter");
-    const match = filter?.match(/^(\w+)\[eq\]:"([^"]+)"$/);
+    const conditions = [...(filter || "").matchAll(/(\w+)\[(eq|gte|gt)\]:"([^"]+)"/g)];
     const ids = filter?.match(/^id\[in\]:\[([^\]]+)\]$/)?.[1].split(",");
-    const found = [...rows.values()].filter((row) => (!match || row[match[1]] === match[2]) && (!ids || ids.includes(row.id)));
+    const found = [...rows.values()].filter((row) => conditions.every(([, key, op, value]) =>
+      op === "eq" ? row[key] === value : op === "gte" ? String(row[key] || "") >= value : String(row[key] || "") > value) && (!ids || ids.includes(row.id)));
     if (url.searchParams.get("orderBy") === "createdAt[DescNullsLast]") {
       found.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
     }
+    if (url.searchParams.get("orderBy") === "id[AscNullsFirst]") found.sort((a, b) => a.id.localeCompare(b.id));
     return Response.json({ data: { [object]: found.slice(0, Number(url.searchParams.get("limit")) || found.length) } });
   };
 });
 
 afterEach(() => { globalThis.fetch = originalFetch; });
+function autoSettings(overrides: Partial<import("@dialer/shared").AiAgentSettings> = {}) {
+  const settings = { ...settingsApi.defaultAgentSettings(), goalMode: "calls" as const, ...overrides };
+  table("agencyPhones").get(phoneId)!.aiAgentSettings = settings;
+  return settings;
+}
+async function approve(overrides: Partial<import("@dialer/shared").AiCallInput> = {}) {
+  return automation.approveQueue({ ...input(), ...overrides }, { id: memberId, name: "Test Operator" }, null);
+}
 function input() {
   return { requestId: randomUUID(), contactId, contactType: "prospect" as const, permission: "internal_test" as const, consentEvidence: "Internal test authorised by the owner." };
 }
@@ -179,6 +195,316 @@ function assistantStart() {
   const assistant = payload.assistant as { instructions: string; dynamic_variables: Record<string, string> };
   return { payload, assistant, briefing: JSON.parse(assistant.dynamic_variables.crm_context) as VoiceBriefing };
 }
+
+test("shared agent controls persist independently, validate one goal mode and retain deployment kill switches", async () => {
+  process.env.AI_VOICE_INBOUND_ENABLED = "true";
+  const controls = autoSettings({ goalMode: "bookings", dailyBookingGoal: 10, inboundGuidance: "Discuss automation.", outboundGuidance: "Ask about reporting.", paused: true });
+  assert.deepEqual(await settingsApi.saveAgentSettings(controls, null), controls);
+  assert.deepEqual(await settingsApi.readAgentSettings(), controls);
+  await assert.rejects(settingsApi.saveAgentSettings({ ...controls, goalMode: "both" }, null), /one goal mode/);
+  await assert.rejects(settingsApi.saveAgentSettings({ ...controls, dailyCallGoal: 0 }, null), /whole-number/);
+  await assert.rejects(settingsApi.saveAgentSettings({ ...controls, dailyBookingGoal: 10.5 }, null), /whole-number/);
+  await assert.rejects(settingsApi.saveAgentSettings({ ...controls, outboundGuidance: "x".repeat(8001) }, null), /guidance/);
+  process.env.AI_VOICE_ENABLED = "false";
+  await assert.rejects(settingsApi.saveAgentSettings(controls, null), /deployment configuration/);
+  table("agencyPhones").get(phoneId)!.aiAgentSettings = { goalMode: "bookings" };
+  await assert.rejects(settingsApi.readAgentSettings(), /valid switches/);
+});
+
+test("outbound off blocks manual calls without disabling inbound, and workspace guidance cannot replace fixed instructions", async () => {
+  process.env.AI_VOICE_INBOUND_ENABLED = "true";
+  autoSettings({ outboundEnabled: false, inboundEnabled: true });
+  await assert.rejects(voice.startVoiceCall(input(), memberId, null), /switched off/);
+  assert.equal(await inbound.inboundAiEnabled(), true);
+  autoSettings({ outboundGuidance: "Prioritise reporting workflows.", inboundEnabled: false });
+  assert.equal(await inbound.inboundAiEnabled(), false);
+  const call = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.answered", event(call.id));
+  assert.ok(assistantStart().assistant.instructions.startsWith(ASSISTANT_INSTRUCTIONS));
+  assert.match(assistantStart().assistant.instructions, /Prioritise reporting workflows/);
+  assert.match(assistantStart().assistant.instructions, /never overrides/);
+});
+
+test("queue approval is idempotent, permission-bound, audited and never dials immediately", async () => {
+  const request = input();
+  const first = await approve(request);
+  const repeated = await approve(request);
+  assert.equal(first.id, request.requestId);
+  assert.equal(repeated.id, first.id);
+  assert.equal(first.phone, "+442079460456");
+  assert.equal(first.approvedByMemberId, memberId);
+  assert.equal(first.state, "QUEUED");
+  assert.equal(providerCalls.length, 0);
+  await assert.rejects(approve({ ...request, consentEvidence: "Different permission record." }), /different contact or permission/);
+  await assert.rejects(approve(), /already has a queued/);
+  await assert.rejects(approve({ consentEvidence: "" }), /permission record/);
+  await automation.cancelQueue(first.id);
+  assert.equal((await automation.runAutomation()).status, "goal_off");
+  assert.equal(providerCalls.length, 0);
+});
+
+test("automatic calling starts when queue and goal are configured and concurrent ticks cannot duplicate a call", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const entry = await approve();
+  const results = await Promise.allSettled([automation.runAutomation(), automation.runAutomation()]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+  assert.equal(providerCalls.find((call) => call.path === "/v2/calls")!.body.command_id, entry.id);
+  assert.equal((await automation.runAutomation()).status, "call_active");
+  const row = table("agencyAiQueueEntries").get(entry.id)!;
+  assert.equal(row.state, "STARTING");
+  assert.ok(row.callId);
+  const stored = table("agencyCalls").get(String(row.callId))!;
+  assert.equal(stored.createdByMemberId, memberId);
+  assert.equal((stored.createdBy as { name: string }).name, "Test Operator");
+  const view = await automation.automationView();
+  assert.equal(view.calls, 1);
+  assert.equal(view.queue.length, 1);
+});
+
+test("call mode stops at the exact daily threshold and retains pending entries for the next UK day", async (t) => {
+  const clock = t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings({ dailyCallGoal: 1 });
+  const first = await approve();
+  const otherId = randomUUID();
+  table("agencyProspects").set(otherId, { ...table("agencyProspects").get(contactId)!, id: otherId, name: "Other Approved Company" });
+  const next = await approve({ contactId: otherId });
+  table("agencyAiQueueEntries").get(next.id)!.createdAt = "2026-10-29T12:00:01.000Z";
+  await automation.runAutomation();
+  const callId = String(table("agencyAiQueueEntries").get(first.id)!.callId);
+  await voice.handleVoiceEvent("call.hangup", event(callId, { hangup_cause: "no_answer" }));
+  assert.equal((await automation.runAutomation()).status, "goal_reached");
+  assert.equal(table("agencyAiQueueEntries").get(first.id)!.state, "COMPLETE");
+  assert.equal(table("agencyAiQueueEntries").get(next.id)!.state, "QUEUED");
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+  clock.mock.restore();
+  t.mock.method(Date, "now", () => Date.parse("2026-10-30T12:00:00Z"));
+  assert.equal((await automation.runAutomation()).status, "call_started");
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 2);
+});
+
+test("booking mode ignores the call target and stops only on confirmed outbound conversions", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings({ goalMode: "bookings", dailyCallGoal: 1, dailyBookingGoal: 1 });
+  const entry = await approve();
+  await automation.runAutomation();
+  const callId = String(table("agencyAiQueueEntries").get(entry.id)!.callId);
+  await voice.handleVoiceEvent("call.answered", event(callId));
+  const details = { start: "2026-11-03T10:00:00.000Z", name: "Test Attendee", email: "attendee@example.test", timezone: "Europe/London", confirmed: true };
+  await voice.runVoiceTool(callId, "book", details);
+  await voice.runVoiceTool(callId, "book", details);
+  const state = decryptState<import("./index.js").PrivateState>(String(table("agencyCalls").get(callId)!.aiVoicePrivateState));
+  assert.equal(state.bookingConfirmedAt, "2026-10-29T12:00:00.000Z");
+  assert.equal(bookingRequests.length, 2);
+  assert.deepEqual(bookingRequests[0], bookingRequests[1]);
+  await voice.handleVoiceEvent("call.hangup", event(callId));
+  assert.equal((await automation.runAutomation()).status, "goal_reached");
+  assert.equal((await automation.automationView()).bookings, 1);
+  assert.equal((await automation.automationView()).calls, 1);
+});
+
+test("booking mode continues beyond call target until booking goal, while pause and master off prevent future launches", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings({ goalMode: "bookings", dailyCallGoal: 1 });
+  const first = await approve();
+  const otherId = randomUUID();
+  table("agencyProspects").set(otherId, { ...table("agencyProspects").get(contactId)!, id: otherId });
+  const second = await approve({ contactId: otherId });
+  table("agencyAiQueueEntries").get(second.id)!.createdAt = "2026-10-29T12:00:01.000Z";
+  await automation.runAutomation();
+  await voice.handleVoiceEvent("call.hangup", event(String(table("agencyAiQueueEntries").get(first.id)!.callId)));
+  autoSettings({ goalMode: "bookings", paused: true });
+  assert.equal((await automation.runAutomation()).status, "paused");
+  autoSettings({ goalMode: "bookings", outboundEnabled: false });
+  assert.equal((await automation.runAutomation()).status, "disabled");
+  autoSettings({ goalMode: "bookings", dailyCallGoal: 1 });
+  assert.equal((await automation.runAutomation()).status, "call_started");
+  assert.equal(table("agencyAiQueueEntries").get(second.id)!.state, "STARTING");
+});
+
+test("automation respects UK hours, DST and bank holidays without consuming approved entries", async (t) => {
+  autoSettings();
+  const entry = await approve();
+  for (const date of ["2026-10-29T17:00:00Z", "2026-10-31T12:00:00Z", "2026-12-25T10:00:00Z", "2026-07-07T07:59:00Z", "2026-07-07T16:00:00Z"]) {
+    const clock = t.mock.method(Date, "now", () => Date.parse(date));
+    assert.equal((await automation.runAutomation()).status, "outside_hours");
+    assert.equal(table("agencyAiQueueEntries").get(entry.id)!.state, "QUEUED");
+    clock.mock.restore();
+  }
+  assert.equal(providerCalls.length, 0);
+});
+
+test("changed numbers and new opt-outs are blocked at automatic dispatch", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const entry = await approve({ permission: "consented" });
+  table("agencyProspects").get(contactId)!.phone = "+442079460999";
+  assert.equal((await automation.runAutomation()).status, "attempt_failed");
+  assert.match(String(table("agencyAiQueueEntries").get(entry.id)!.error), /phone changed/i);
+  assert.equal(providerCalls.length, 0);
+  table("agencyProspects").get(contactId)!.phone = "+442079460456";
+  const retry = await automation.retryQueue(entry.id, randomUUID(), { id: memberId, name: "Test Operator" }, null);
+  table("agencyProspects").get(contactId)!.outboundState = "OPTED_OUT";
+  assert.equal((await automation.runAutomation()).status, "attempt_failed");
+  assert.match(String(table("agencyAiQueueEntries").get(retry.id)!.error), /opted out/);
+  assert.equal(providerCalls.length, 0);
+});
+
+test("changed-number failures allow a new approval only after reviewing fresh permission on the contact", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const first = await approve({ permission: "consented" });
+  table("agencyProspects").get(contactId)!.phone = "+442079460999";
+  await automation.runAutomation();
+  await assert.rejects(automation.retryQueue(first.id, randomUUID(), { id: memberId, name: "Test Operator" }, null), /phone changed/i);
+  const reviewed = await approve({ permission: "consented", consentEvidence: "Reviewed new number and received fresh AI calling permission today." });
+  assert.equal(reviewed.phone, "+442079460999");
+  assert.equal(reviewed.state, "QUEUED");
+});
+
+test("pause changes made during calendar preparation are checked before the provider dial", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  await approve();
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async (request, init) => {
+    const url = new URL(String(request));
+    if (url.hostname === "booking.fewzen.ai" && url.pathname === "/api/availability") autoSettings({ paused: true });
+    return fetch(request, init);
+  };
+  assert.equal((await automation.runAutomation()).status, "attempt_failed");
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 0);
+  assert.equal(await locks.findLock("ai-voice"), null);
+});
+
+test("unavailable holiday checking fails closed and surfaces an operational error without consuming an approval", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2027-01-04T12:00:00Z"));
+  autoSettings();
+  const entry = await approve();
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async (request, init) => {
+    if (new URL(String(request)).hostname === "www.gov.uk") return Response.json({ error: "unavailable" }, { status: 503 });
+    return fetch(request, init);
+  };
+  await assert.rejects(automation.runAutomation(), /holiday checking is unavailable/);
+  assert.equal(table("agencyAiQueueEntries").get(entry.id)!.state, "QUEUED");
+  assert.equal((table("agencyPhones").get(phoneId)!.aiAutomationRun as { status: string }).status, "error");
+  assert.equal(providerCalls.length, 0);
+});
+
+test("failed preparation never counts as a call and requires explicit retry; retry requests remain idempotent", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const entry = await approve();
+  calendarFails = true;
+  assert.equal((await automation.runAutomation()).status, "attempt_failed");
+  assert.equal((await automation.automationView()).calls, 0);
+  assert.equal((await automation.runAutomation()).status, "queue_empty");
+  assert.equal(await locks.findLock("ai-voice"), null);
+  calendarFails = false;
+  const requestId = randomUUID();
+  const retry = await automation.retryQueue(entry.id, requestId, { id: memberId, name: "Test Operator" }, null);
+  assert.equal((await automation.retryQueue(entry.id, requestId, { id: memberId, name: "Test Operator" }, null)).id, retry.id);
+  assert.equal((await automation.runAutomation()).status, "call_started");
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+});
+
+test("uncertain autonomous calls retain reservations and never automatically redial", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const entry = await approve();
+  uncertainDial = true;
+  assert.equal((await automation.runAutomation()).status, "recovery_required");
+  assert.equal(table("agencyAiQueueEntries").get(entry.id)!.state, "UNCERTAIN");
+  assert.equal((await automation.runAutomation()).status, "call_active");
+  assert.equal((await automation.automationView()).calls, 1);
+  await assert.rejects(automation.retryQueue(entry.id, randomUUID(), { id: memberId, name: "Test Operator" }, null), /finished attempt/);
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+});
+
+test("cancelled entries never dial; interrupted workers with no call require explicit approval rather than retrying", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const first = await approve();
+  await automation.cancelQueue(first.id);
+  assert.equal((await automation.runAutomation()).status, "queue_empty");
+  const next = await approve();
+  table("agencyAiQueueEntries").get(next.id)!.state = "STARTING";
+  assert.equal((await automation.runAutomation()).status, "queue_empty");
+  assert.equal(table("agencyAiQueueEntries").get(next.id)!.state, "FAILED");
+  assert.equal(providerCalls.length, 0);
+});
+
+test("human-held caller numbers are never used by automatic calling", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings();
+  const entry = await approve();
+  Object.assign(table("agencyPhones").get(phoneId)!, { claimedByMemberId: memberId, lastHeartbeatAt: new Date().toISOString() });
+  assert.equal((await automation.runAutomation()).status, "number_busy");
+  assert.equal(table("agencyAiQueueEntries").get(entry.id)!.state, "QUEUED");
+  assert.equal(providerCalls.length, 0);
+  assert.equal((await automation.automationView()).calls, 0);
+});
+
+test("stalled scheduler recovery never clears live AI reservations or permits early lock stealing", async (t) => {
+  const now = Date.parse("2026-10-29T12:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const lock = await locks.acquireLock("ai-automation");
+  table("agencyPhones").get(phoneId)!.aiAutomationRun = { checkedAt: new Date(now - 60_000).toISOString(), status: "checking", detail: "Checking" };
+  await assert.rejects(automation.recoverAutomation(), /15 minutes/);
+  table("agencyPhones").get(phoneId)!.aiAutomationRun = { checkedAt: new Date(now - 16 * 60_000).toISOString(), status: "checking", detail: "Checking" };
+  await assert.rejects(automation.recoverAutomation(), /15 minutes/);
+  table("agencyVoiceLocks").get(lock.id)!.createdAt = new Date(now - 16 * 60_000).toISOString();
+  const callLock = await locks.acquireLock("ai-voice", randomUUID());
+  await assert.rejects(automation.recoverAutomation(), /no active/);
+  await locks.releaseLock(callLock);
+  await automation.recoverAutomation();
+  assert.equal(await locks.findLock("ai-automation"), null);
+  assert.equal(table("agencyVoiceLocks").get(lock.id)!.lockKey, null);
+});
+
+test("daily metrics use London midnight and confirmation time, excluding inbound, human and legacy un-timestamped bookings", async () => {
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  const template = await voice.getVoiceCall(started.id);
+  const booking = {
+    key: "test-key", input: { start: "2026-07-10T09:00:00Z", name: "Test", email: "test@example.test", timezone: "Europe/London" },
+    result: { id: "confirmed-booking", start: "2026-07-10T09:00:00Z", end: "2026-07-10T09:30:00Z", meetLink: null, manageUrl: "https://booking.example.test/manage" },
+  };
+  const confirmedState = encryptState({ company: "Test", script: "", attempt: booking, bookingConfirmedAt: "2026-07-07T23:01:00Z" });
+  const midnight = new Date("2026-07-07T23:05:00Z"); // 12:05 am BST on 8 July.
+  const calls = [
+    { ...template, startedAt: "2026-07-07T23:01:00Z", aiVoiceState: "ENDED", aiVoicePrivateState: confirmedState },
+    { ...template, startedAt: "2026-07-07T22:59:00Z", aiVoiceState: "ENDED", aiVoicePrivateState: encryptState({ company: "Test", script: "", attempt: booking, bookingConfirmedAt: "2026-07-07T22:59:30Z" }) },
+    { ...template, startedAt: "2026-07-07T23:01:00Z", aiVoiceState: "FAILED" },
+    { ...template, direction: "INBOUND", startedAt: "2026-07-07T23:01:00Z", aiVoicePrivateState: confirmedState },
+    { ...template, aiVoiceRequestId: "", startedAt: "2026-07-07T23:01:00Z" },
+    { ...template, startedAt: "2026-07-07T23:01:00Z", aiVoiceState: "ENDED", meetingAt: "2026-07-08T10:00:00Z", meetingBookingId: "legacy", aiVoicePrivateState: encryptState({ company: "Test", script: "", attempt: booking }) },
+  ];
+  assert.deepEqual(automation.dailyProgress(calls, autoSettings({ goalMode: "bookings", dailyBookingGoal: 1 }), midnight), {
+    day: "2026-07-08", calls: 2, bookings: 1, target: 1, goalReached: true,
+  });
+  assert.equal(automation.londonDay(new Date("2026-12-31T23:59:00Z")), "2026-12-31");
+  assert.equal(automation.londonDay(new Date("2027-01-01T00:00:00Z")), "2027-01-01");
+});
+
+test("daily goal counting walks more than one CRM page without dropping its filter or overshooting", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-10-29T12:00:00Z"));
+  autoSettings({ dailyCallGoal: 205 });
+  const started = await voice.startVoiceCall(input(), memberId, null);
+  await voice.handleVoiceEvent("call.hangup", event(started.id));
+  const template = table("agencyCalls").get(started.id)!;
+  for (let i = 0; i < 204; i++) {
+    const id = randomUUID();
+    table("agencyCalls").set(id, { ...template, id, aiVoiceRequestId: randomUUID() });
+  }
+  const historicalId = randomUUID();
+  table("agencyCalls").set(historicalId, { ...template, id: historicalId, startedAt: "2026-10-28T10:00:00Z" });
+  await approve();
+  assert.equal((await automation.runAutomation()).status, "goal_reached");
+  assert.equal((await automation.automationView()).calls, 205);
+  assert.equal(providerCalls.filter((call) => call.path === "/v2/calls").length, 1);
+});
 
 test("answered call receives a fresh, bounded CRM briefing, relevant history and a named greeting", async () => {
   const personId = randomUUID();
@@ -473,6 +799,12 @@ test("HTTP tools reject forged or cross-call credentials; operator routes requir
     const base = `http://127.0.0.1:${address.port}/api/ai-calls`;
     assert.equal((await fetch(`${base}/config`)).status, 401);
     assert.equal((await fetch(`${base}/profile`)).status, 401);
+    for (const path of ["/settings", "/automation"]) assert.equal((await fetch(`${base}${path}`)).status, 401);
+    for (const path of ["/settings", "/queue", "/automation/recover"]) {
+      assert.equal((await fetch(`${base}${path}`, { method: path === "/settings" ? "PUT" : "POST" })).status, 401);
+    }
+    assert.equal((await fetch(`${base}/automation/run`, { method: "POST" })).status, 401);
+    assert.equal((await fetch(`${base}/automation/run`, { method: "POST", headers: { Authorization: "Bearer wrong-scheduler-credential" } })).status, 401);
     assert.equal((await fetch(`${base}/profile`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Test AI" }) })).status, 401);
     assert.equal((await fetch(`${base}/setup`, { method: "POST" })).status, 401);
     assert.equal((await fetch(`${base}/setup`, { method: "POST", headers: { Authorization: `Bearer ${setupToken()}` } })).status, 409);
@@ -487,6 +819,10 @@ test("HTTP tools reject forged or cross-call credentials; operator routes requir
     assert.equal((await fetch(`${base}/profile`, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Test AI" }) })).status, 401);
     const memberToken = generateToken({ userId: "test-user", workspaceMemberId: memberId });
     const operatorHeaders = { Authorization: `Bearer ${memberToken}` };
+    assert.equal((await fetch(`${base}/automation/run`, { method: "POST", headers: operatorHeaders })).status, 401);
+    const schedulerResponse = await fetch(`${base}/automation/run`, { method: "POST", headers: { Authorization: `Bearer ${process.env.AI_AUTOMATION_CRON_SECRET}` } });
+    assert.equal(schedulerResponse.status, 200);
+    assert.equal((await schedulerResponse.json() as { status: string }).status, "call_active");
     const liveStop = await fetch(`${base}/${call.id}/stop`, { method: "POST", headers: operatorHeaders });
     assert.equal(liveStop.status, 200);
     const liveResult = await liveStop.json() as { stopping: boolean; call: { active: boolean } };

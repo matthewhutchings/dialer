@@ -29,7 +29,7 @@ router.get("/inbound-config", async (_req, res) => {
       ...settings,
       inboundNumber: config.inboundNumber,
       browserAvailable: !!config.appId && !!config.agentSipUri && !!config.inboundNumber,
-      aiReceptionistEnabled: inboundAiEnabled(),
+      aiReceptionistEnabled: await inboundAiEnabled(),
     });
   } catch (err: any) {
     log.error(`inbound settings read failed: ${err?.message}`);

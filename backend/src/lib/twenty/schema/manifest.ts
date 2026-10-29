@@ -16,6 +16,26 @@ import type { SchemaManifest, SchemaObject, SchemaRelation } from "./types.js";
  */
 export const SCHEMA_OBJECTS: SchemaObject[] = [
   {
+    nameSingular: "agencyAiQueueEntry",
+    namePlural: "agencyAiQueueEntries",
+    labelSingular: "AI Queue Entry",
+    labelPlural: "AI Queue Entries",
+    description: "Explicitly authorised, single-attempt AI outbound calls. Entry ID is the stable dial request ID.",
+    icon: "IconList",
+    fields: [
+      { name: "contactId", type: "TEXT", label: "Contact ID" },
+      { name: "contactType", type: "TEXT", label: "Contact Type" },
+      { name: "phone", type: "TEXT", label: "Approved Phone" },
+      { name: "permission", type: "TEXT", label: "AI Call Permission" },
+      { name: "consentEvidence", type: "TEXT", label: "Consent Evidence" },
+      { name: "approvedByMemberId", type: "TEXT", label: "Approved By Member ID" },
+      { name: "approvedByName", type: "TEXT", label: "Approved By Name" },
+      { name: "state", type: "TEXT", label: "Queue State" },
+      { name: "callId", type: "TEXT", label: "Call ID" },
+      { name: "error", type: "TEXT", label: "Queue Error" },
+    ],
+  },
+  {
     nameSingular: "agencyVoiceLock",
     namePlural: "agencyVoiceLocks",
     labelSingular: "Voice Lock",
@@ -272,6 +292,8 @@ export const SCHEMA_OBJECTS: SchemaObject[] = [
       { name: "health", type: "RAW_JSON", label: "Health", description: "Telnyx health object: { message_success_rate, ... }" },
       { name: "inboundRouting", type: "RAW_JSON", label: "Inbound Routing", description: "Shared inbound fallbackPhone and holdAudioUrl; deployment defaults apply until saved in the app." },
       { name: "aiAgentName", type: "TEXT", label: "AI Agent Name", description: "Shared reporting-only AI identity. Does not create a workspace login or change who triggered a call." },
+      { name: "aiAgentSettings", type: "RAW_JSON", label: "AI Agent Settings", description: "Workspace AI inbound/outbound controls and mutually exclusive daily goal mode." },
+      { name: "aiAutomationRun", type: "RAW_JSON", label: "AI Automation Run", description: "Last authenticated scheduler check and operational status." },
       { name: "lastHeartbeatAt", type: "DATE_TIME", label: "Last Heartbeat At" },
       { name: "lastSyncedAt", type: "TEXT", label: "Last Synced At", description: "ISO timestamp of last Telnyx sync" },
       { name: "messagingProfileId", type: "TEXT", label: "Messaging Profile ID", description: "Telnyx messaging profile UUID" },
