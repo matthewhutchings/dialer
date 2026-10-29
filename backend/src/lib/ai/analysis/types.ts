@@ -9,6 +9,14 @@ export interface CallQualityScores {
   sentiment: number;
 }
 
+/** A follow-up the caller or prospect actually agreed to on the call. */
+export interface FollowUpTask {
+  title: string;
+  description: string;
+  /** ISO timestamp, only when a day or time was stated on the call. */
+  dueAt: string | null;
+}
+
 export interface CallAnalysis {
   summary: string;
   sentiment: AiSentiment;
@@ -16,6 +24,7 @@ export interface CallAnalysis {
   score: number;
   scores: CallQualityScores;
   keyPoints: string[];
+  tasks: FollowUpTask[];
   /** 0-1: model self-reported confidence. */
   confidence: number;
   model: string;

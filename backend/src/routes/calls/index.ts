@@ -4,6 +4,7 @@ import { listTwentyAll, createTwenty, updateTwenty, getTwenty } from "../../lib/
 import { resolveActor } from "../../lib/twenty/actor/index.js";
 import { telnyxClient, telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../../lib/ai/analysis/index.js";
+import { createFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
 import { createLogger } from "../../lib/logger/index.js";
 import type { AgencyCall } from "./types.js";
 import { mapCall, sortNewestFirst, splitStatus } from "./helpers/index.js";
@@ -346,6 +347,7 @@ router.post("/:id/analyze", async (req, res) => {
     };
     const updated = await updateTwenty<AgencyCall>('agencyCalls', call.id, patch, await resolveActor(req));
     log.info(`AI analysis stored: call=${call.id} sentiment=${analysis.sentiment} score=${analysis.score}`);
+    await createFollowUpTasks(call, analysis.tasks).catch((err: any) => log.error(`Follow-up tasks failed for call=${call.id}: ${err.message}`));
     res.json({ ok: true, analysis, call: mapCall(updated) });
   } catch (err: any) {
     log.error("Failed to analyze call:", err.message);

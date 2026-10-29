@@ -274,6 +274,11 @@ export const api = {
     ids: (params: string) => request<{ ids: { id: string; type: "prospect" | "lead" | "person" }[]; truncated: boolean }>(`/api/prospects/ids?${params}`),
     facets: () => request<unknown>("/api/prospects/facets"),
     lookup: (ids: string[]) => request<unknown[]>(`/api/prospects/lookup?ids=${ids.map(encodeURIComponent).join(",")}`),
+    assignCampaign: (data: { campaignId: string | null; contacts: { id: string; type: "prospect" | "lead" | "person" }[] }) =>
+      request<{ requested: number; updated: number; failed: number; failures: { id: string; type: string; error: string }[] }>(
+        "/api/contacts/campaign",
+        { method: "POST", body: JSON.stringify(data) },
+      ),
   },
 
   admin: {

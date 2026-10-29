@@ -2,6 +2,7 @@ import { Router } from "express";
 import { callResultMachine } from "@dialer/shared";
 import { listTwenty, createTwenty, updateTwenty } from "../../../lib/twenty/client/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../../../lib/ai/analysis/index.js";
+import { createFollowUpTasks } from "../../../lib/ai/analysis/followUpTasks.js";
 import { createLogger } from "../../../lib/logger/index.js";
 import type { AgencyCall } from "../../calls/types.js";
 import { handleBridgeEvent } from "../../../lib/audioBridge/index.js";
@@ -100,6 +101,7 @@ async function maybeAnalyze(callId: string, transcript: string, call: AgencyCall
       summary: analysis.summary,
     });
     log.info(`AI analysis stored via webhook: call=${callId} score=${analysis.score}`);
+    await createFollowUpTasks(call, analysis.tasks).catch((err: any) => log.error(`Follow-up tasks failed for call=${callId}: ${err.message}`));
   } catch (err: any) {
     log.info(`Webhook AI analysis skipped for call=${callId}: ${err.message}`);
   }

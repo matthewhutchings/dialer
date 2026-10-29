@@ -38,6 +38,7 @@ const navGroups: NavItem[][] = [
   [
     { to: '/reports', label: 'Reports', icon: BarChart3 },
     { to: '/contacts', label: 'Contacts', icon: Users },
+    { to: '/campaigns', label: 'Campaigns', icon: FileText },
   ],
   [
     { to: '/scripts', label: 'Scripts', icon: FileText },

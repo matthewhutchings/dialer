@@ -19,6 +19,9 @@ import { DataTable, TablePager, ToolbarButton, parsePageSize, useDataTable, type
 import { usePersistedState } from "@/domains/app/persistedState";
 import type { HeaderFilterOption } from "@/domains/ui/table";
 import { ScriptsModal } from "@/domains/scripts/workspace";
+import { useCampaigns } from "@/domains/campaigns/data";
+import { Button } from "@/domains/ui/button";
+import { Modal } from "@/domains/ui/modal";
 import { DispositionBadge, DispositionIcon, dispositionMeta } from "@/domains/calls/disposition";
 import { CountryBadge, CountryFlag } from "@/domains/country/badge";
 import { countryCode, countryName } from "@/domains/country/lookup";
@@ -86,6 +89,8 @@ function useDebounced<T>(value: T, ms: number): T {
 
 /** The Last call filter value for contacts with no call (matches the backend). */
 const NEVER_CALLED = "__never";
+const NO_CAMPAIGN = "__none";
+const UNSELECTED_CAMPAIGN = "__unselected";
 
 function option(value: string, label: string, icon: React.ReactNode, count?: number): StatusOption {
   return { value, label, icon, hint: count, dotColor: "", bgTint: "", textColor: "" };
@@ -100,6 +105,7 @@ export function ProspectPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { success, error: toastError, warning: toastWarning } = useToast();
+  const { data: campaigns, isLoading: campaignsLoading, error: campaignsError } = useCampaigns();
   const dialer = useDialer();
   const table = useDataTable("prospects");
   const { columnFilters, setColumnFilter } = table;
@@ -237,6 +243,12 @@ export function ProspectPage() {
   const [bulkDelete, setBulkDelete] = useState<string[] | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
+  const [campaignAssignment, setCampaignAssignment] = useState<{
+    contacts: { id: string; type: ContactRowType }[];
+    clear: () => void;
+  } | null>(null);
+  const [campaignChoice, setCampaignChoice] = useState(UNSELECTED_CAMPAIGN);
+  const [assigningCampaign, setAssigningCampaign] = useState(false);
 
   const refresh = () =>
     Promise.all([
@@ -316,6 +328,35 @@ export function ProspectPage() {
       success("Deleted", `${ids.length} contact(s) deleted`);
     } catch (err) {
       toastError("Contacts not deleted", describeError(err).detail);
+    }
+  }
+
+  async function assignCampaign() {
+    if (!campaignAssignment || campaignChoice === UNSELECTED_CAMPAIGN) return;
+    setAssigningCampaign(true);
+    try {
+      const result = await api.contacts.assignCampaign({
+        campaignId: campaignChoice === NO_CAMPAIGN ? null : campaignChoice,
+        contacts: campaignAssignment.contacts,
+      });
+      await refresh();
+      if (result.failed === 0) {
+        success(
+          campaignChoice === NO_CAMPAIGN ? "Campaign removed" : "Campaign assigned",
+          `${result.updated.toLocaleString()} contact${result.updated === 1 ? "" : "s"} updated. Their linked call script will be shown in the dialer.`,
+        );
+        campaignAssignment.clear();
+        setCampaignAssignment(null);
+      } else {
+        toastWarning(
+          "Campaign assignment incomplete",
+          `${result.updated.toLocaleString()} assigned; ${result.failed.toLocaleString()} failed. ${result.failures[0]?.error ?? "Review the contacts and retry."}`,
+        );
+      }
+    } catch (err) {
+      toastError("Campaign not assigned", describeError(err).detail);
+    } finally {
+      setAssigningCampaign(false);
     }
   }
 
@@ -478,20 +519,39 @@ export function ProspectPage() {
           selectAll: selectAllMatching,
           onDelete: (ids) => setBulkDelete(ids),
           actions: (ids, clear) => (
-            <ToolbarButton
-              primary
-              onClick={() => {
-                // People are dialled as their company, so only prospects and leads are queued directly.
-                const callable = ids.filter((id) => typeOf.get(id) !== "person");
-                const added = addToQueue(callable);
-                clear();
-                dialer.open();
-                success("Added to dialer", `${added.toLocaleString()} contact${added === 1 ? "" : "s"} queued${callable.length - added ? `, ${(callable.length - added).toLocaleString()} already in the queue` : ""}${ids.length - callable.length ? `, ${ids.length - callable.length} people skipped` : ""}. Open the Queue tab and press Start calling.`);
-              }}
-            >
-              <Phone className="w-3.5 h-3.5" />
-              Add to dialer
-            </ToolbarButton>
+            <>
+              <ToolbarButton
+                onClick={() => {
+                  const contacts = ids.flatMap((id) => {
+                    const type = typeOf.get(id);
+                    return type ? [{ id, type }] : [];
+                  });
+                  if (contacts.length !== ids.length) {
+                    toastError("Campaign not assigned", "One or more selected contact types could not be resolved. Select the contacts again and retry.");
+                    return;
+                  }
+                  setCampaignChoice(UNSELECTED_CAMPAIGN);
+                  setCampaignAssignment({ contacts, clear });
+                }}
+              >
+                <Users className="w-3.5 h-3.5" />
+                Set campaign
+              </ToolbarButton>
+              <ToolbarButton
+                primary
+                onClick={() => {
+                  // People are dialled as their company, so only prospects and leads are queued directly.
+                  const callable = ids.filter((id) => typeOf.get(id) !== "person");
+                  const added = addToQueue(callable);
+                  clear();
+                  dialer.open();
+                  success("Added to dialer", `${added.toLocaleString()} contact${added === 1 ? "" : "s"} queued${callable.length - added ? `, ${(callable.length - added).toLocaleString()} already in the queue` : ""}${ids.length - callable.length ? `, ${ids.length - callable.length} people skipped` : ""}. Open the Queue tab and press Start calling.`);
+                }}
+              >
+                <Phone className="w-3.5 h-3.5" />
+                Add to dialer
+              </ToolbarButton>
+            </>
           ),
         }}
         emptyMessage='No contacts yet. Click "Sync" to import from Twenty.'
@@ -537,6 +597,63 @@ export function ProspectPage() {
       />
 
       <ScriptsModal open={scriptsOpen} onClose={() => setScriptsOpen(false)} />
+
+      <Modal
+        open={campaignAssignment !== null}
+        onClose={() => !assigningCampaign && setCampaignAssignment(null)}
+        title="Set campaign"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" disabled={assigningCampaign} onClick={() => setCampaignAssignment(null)}>Cancel</Button>
+            <Button
+              variant="primary"
+              busy={assigningCampaign}
+              busyLabel="Updating…"
+              disabled={campaignChoice === UNSELECTED_CAMPAIGN || campaignsLoading || !!campaignsError}
+              onClick={() => void assignCampaign()}
+            >
+              Apply to {campaignAssignment?.contacts.length.toLocaleString() ?? 0} contacts
+            </Button>
+          </div>
+        }
+      >
+        <p className="mb-4 text-[13px] text-[var(--ods-text-secondary)]">
+          The selected campaign determines which linked call script appears when agents call these contacts. People are assigned through their company.
+        </p>
+        {campaignsError ? (
+          <p className="text-sm text-red-600">Campaigns could not be loaded: {describeError(campaignsError).detail}</p>
+        ) : campaignsLoading ? (
+          <p className="text-sm text-[var(--ods-text-secondary)]">Loading campaigns…</p>
+        ) : (campaigns ?? []).length === 0 ? (
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--ods-text-secondary)]">Create a campaign before assigning contacts.</p>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setCampaignAssignment(null);
+                navigate("/campaigns");
+              }}
+            >
+              Open campaigns
+            </Button>
+          </div>
+        ) : (
+          <label className="block text-[14px] font-medium text-[var(--ods-text-primary)]">
+            Campaign
+            <select
+              className="mt-1 block w-full rounded-[8px] border border-[var(--ods-border-strong)] bg-[var(--ods-bg-primary)] px-3 py-2 text-[14px]"
+              value={campaignChoice}
+              onChange={(event) => setCampaignChoice(event.target.value)}
+            >
+              <option value={UNSELECTED_CAMPAIGN} disabled>Select a campaign</option>
+              <option value={NO_CAMPAIGN}>Remove campaign</option>
+              {(campaigns ?? []).map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>{campaign.name} ({campaign.status})</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </Modal>
 
       {showForm && (
         <LeadForm

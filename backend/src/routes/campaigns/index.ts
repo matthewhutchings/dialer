@@ -49,7 +49,14 @@ router.post("/", async (req: AuthRequest, res) => {
 
     const payload: any = {
       name: name || "New Campaign",
-      status: status || "ACTIVE",
+      status: (() => {
+        const normalizedStatus = String(status || "active").toUpperCase().replace("-", "_");
+        return normalizedStatus === "PAUSED" || normalizedStatus === "INACTIVE"
+          ? "INACTIVE"
+          : normalizedStatus === "DRAFT"
+            ? "DRAFT"
+            : "ACTIVE";
+      })(),
       campaignType: campaignType || mapCampaignType(utmSource || type || "outbound"),
       note: settings ? JSON.stringify(settings) : undefined,
     };
