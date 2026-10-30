@@ -16,7 +16,11 @@ before(() => {
 
 test("the call update API persists late caller associations and rejects invalid ids", async (t) => {
   const writes: unknown[] = [];
-  t.mock.method(globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!init?.body) {
+      if (String(input).includes("/taskTargets")) return Response.json({ data: { taskTargets: [] } });
+      return Response.json({ data: { agencyCall: { id: "call", agencyProspectId: PROSPECT } } });
+    }
     const body = JSON.parse(String(init?.body));
     writes.push(body);
     return Response.json({ data: { agencyCall: { id: "call", ...body } } });

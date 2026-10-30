@@ -452,6 +452,13 @@ function FollowUpTasks({ callId, hasTranscript, analyzed, syncError, analyzing, 
                   {" · "}{task.dueAt ? `Due ${when(task.dueAt)}` : "No due date"}
                   {" · "}{task.assigneeId ? "Assigned in Twenty" : "Unassigned"}
                 </p>
+                <div className="flex flex-wrap gap-2 text-[12px]">
+                  {task.contacts.length ? task.contacts.map((contact) => (
+                    <Link key={`${contact.type}:${contact.id}`} to={contact.type === "prospect" ? `/contacts/${contact.id}` : `/leads/${contact.id}`} className="font-semibold text-[var(--ods-brand-600)] hover:underline">
+                      Open linked {contact.type === "prospect" ? "contact" : "lead"}
+                    </Link>
+                  )) : <span className="text-amber-700">No linked contact. Re-analyze after you link the call to a contact.</span>}
+                </div>
                 {task.description && <Markdown className="text-[13px] text-[var(--ods-text-secondary)]">{task.description}</Markdown>}
               </li>
             ))}

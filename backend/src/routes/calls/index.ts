@@ -4,7 +4,7 @@ import { listTwentyAll, createTwenty, updateTwenty, getTwenty } from "../../lib/
 import { resolveActor } from "../../lib/twenty/actor/index.js";
 import { telnyxClient, telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../../lib/ai/analysis/index.js";
-import { listCallTasks, syncFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
+import { listCallTasks, repairCallTaskLinks, syncFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
 import { createLogger } from "../../lib/logger/index.js";
 import type { AgencyCall } from "./types.js";
 import { mapCall, sortNewestFirst, splitStatus } from "./helpers/index.js";
@@ -318,6 +318,15 @@ router.patch("/:id", async (req, res) => {
     const actor = await resolveActor(req);
     const updated = await updateTwenty<AgencyCall>('agencyCalls', req.params.id as string, patch, actor);
     forgetLastCalls();
+    if (patch.agencyProspectId !== undefined || patch.agencyLeadId !== undefined) {
+      try {
+        await repairCallTaskLinks(updated.id);
+      } catch (err) {
+        log.error("Call contact saved, but task links failed:", err instanceof Error ? err.message : String(err));
+        res.status(502).json({ error: "The call contact was saved, but its task links could not be updated. Retry the contact association or re-analyze the call." });
+        return;
+      }
+    }
     res.json(mapCall(updated));
   } catch (err: any) {
     log.error("Failed to update call:", err.message);
@@ -345,6 +354,7 @@ router.post("/:id/analyze", async (req, res) => {
       analysis = await analyzeCallTranscript(call.transcript, {
         direction: call.direction,
         durationSeconds: call.durationSeconds,
+        startedAt: call.startedAt,
       });
     } catch (err: any) {
       log.info(`AI analysis failed for call=${call.id}: ${err.message}`);

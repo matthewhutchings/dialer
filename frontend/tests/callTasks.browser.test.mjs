@@ -43,6 +43,7 @@ test("call review shows native tasks, sync failures, retries and saved Twenty st
     id: "task-1", title: "Send Tech and AI information to Vanessa",
     description: "Send the agreed details to office@example.test.", status: "TODO",
     dueAt: "2026-10-31T09:00:00Z", assigneeId: "test-member",
+    contacts: [{ type: "prospect", id: "contact-1" }],
   };
   const syncError = "The AI review was saved, but follow-up tasks could not all be saved in Twenty. Check the linked tasks and re-analyze to retry.";
   await page.route("**/api/**", async (route) => {
@@ -85,6 +86,7 @@ test("call review shows native tasks, sync failures, retries and saved Twenty st
   const taskLink = panel.getByRole("link", { name: task.title, exact: true });
   await taskLink.waitFor();
   assert.equal(await taskLink.getAttribute("href"), "https://crm.example.test/object/task/task-1");
+  assert.equal(await panel.getByRole("link", { name: "Open linked contact", exact: true }).getAttribute("href"), "/contacts/contact-1");
   assert(await panel.getByText(task.description, { exact: true }).isVisible());
   assert.match(await panel.innerText(), /To do.*Due.*Assigned in Twenty/);
   assert.equal(await panel.getByRole("alert").count(), 0);

@@ -35,7 +35,9 @@ const proposed = [
 let failTarget: string | null;
 let failRead: boolean;
 let loseCreate: string | null;
-let modelTasks: { title: string; description: string; due: string | null }[];
+let ignoreTarget: string | null;
+let analysisRequest: { messages: { role: string; content: string }[]; max_tokens: number };
+let modelTasks: Record<string, unknown>[];
 const targetRequests: URL[] = [];
 
 function table(object: string) {
@@ -50,15 +52,28 @@ beforeEach(() => {
   failTarget = null;
   failRead = false;
   loseCreate = null;
+  ignoreTarget = null;
   targetRequests.length = 0;
-  modelTasks = [{ title: proposed[0].title, description: proposed[0].description, due: null }];
+  modelTasks = [{
+    title: "Email the Tech and AI service overview to Vanessa",
+    objective: "Give Vanessa the service overview for the relevant team.",
+    recipient: { name: "Vanessa", email: "office@example.test" },
+    steps: ["Prepare the Tech and AI service overview.", "Send the overview to office@example.test for Vanessa.", "Record the sent-message reference on the linked contact."],
+    completionCriteria: ["The sent-message record identifies office@example.test and the service overview."],
+    evidence: ["Vanessa: Send information to office@example.test and I will forward it."],
+    missingInformation: ["Confirm the approved service overview before you send it."],
+    due: null,
+  }];
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
     if (url.hostname === "127.0.0.1") return originalFetch(input, init);
-    if (url.hostname === "ai.example.test") return Response.json({ choices: [{ message: { content: JSON.stringify({
+    if (url.hostname === "ai.example.test") {
+      analysisRequest = JSON.parse(String(init?.body));
+      return Response.json({ choices: [{ message: { content: JSON.stringify({
       summary: "Agreed to send information to Vanessa.", sentiment: "POSITIVE", score: 72,
       keyPoints: ["Send the information"], tasks: modelTasks,
-    }) } }] });
+      }) } }] });
+    }
     assert.equal(url.hostname, "crm.example.test", "Tests must not contact real external services");
     const [, , object, id] = url.pathname.split("/");
     const rows = table(object);
@@ -69,6 +84,7 @@ beforeEach(() => {
       const newId = body.id ?? randomUUID();
       if (rows.has(newId)) return Response.json({ error: "Already exists" }, { status: 409 });
       const row = { ...body, id: newId };
+      if (ignoreTarget) delete row[ignoreTarget];
       rows.set(newId, row);
       if (loseCreate === object) { loseCreate = null; throw new Error("Response lost after create"); }
       return Response.json({ data: row });
@@ -133,6 +149,57 @@ test("partial links, lost responses and concurrent retries recover without dupli
   assert.equal(table("taskTargets").size, 6);
 });
 
+test("re-analysis repairs call-only tasks even when the new analysis proposes no tasks", async () => {
+  const id = randomUUID();
+  table("tasks").set(id, { id, title: "Old follow-up", status: "DONE", bodyV2: { markdown: "User notes" } });
+  table("taskTargets").set("call-only", { id: "call-only", taskId: id, targetAgencyCallId: call.id });
+  const stale = { id: call.id };
+  assert.equal(await createFollowUpTasks(stale, []), 0);
+  const [task] = await listCallTasks(call.id);
+  assert.deepEqual(task.contacts, [{ type: "prospect", id: call.agencyProspectId }, { type: "lead", id: call.agencyLeadId }]);
+  assert.equal(task.status, "DONE");
+  assert.equal(task.description, "User notes");
+  assert.equal(table("tasks").size, 1);
+});
+
+test("late call association repairs existing task contact links without running AI", async (t) => {
+  const { base, headers } = await serve(t);
+  const id = randomUUID();
+  table("tasks").set(id, { id, title: "Send the overview" });
+  table("taskTargets").set("call-only", { id: "call-only", taskId: id, targetAgencyCallId: call.id });
+  const response = await originalFetch(`${base}/api/calls/${call.id}`, {
+    method: "PATCH", headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ agencyProspectId: call.agencyProspectId }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await listCallTasks(call.id))[0].contacts.length, 2);
+});
+
+test("a call without a contact cannot silently create call-only analysis tasks", async () => {
+  table("agencyCalls").set(call.id, { id: call.id });
+  await assert.rejects(createFollowUpTasks(call, proposed), /no linked contact/);
+  assert.equal(table("tasks").size, 0);
+});
+
+test("a success response that omits the native contact relation is reported as a failure", async () => {
+  ignoreTarget = "targetAgencyProspectId";
+  await assert.rejects(createFollowUpTasks(call, proposed), /did not save the task link/);
+});
+
+test("analysis uses full call evidence after character 12000 and the original call date", async (t) => {
+  const { base, headers } = await serve(t);
+  const transcript = `${"Call context. ".repeat(1100)}${call.transcript}`;
+  table("agencyCalls").set(call.id, { ...call, transcript, startedAt: "2026-10-28T11:01:00Z" });
+  const response = await originalFetch(`${base}/api/calls/${call.id}/analyze`, { method: "POST", headers });
+  assert.equal(response.status, 200);
+  assert.match(analysisRequest.messages[0].content, /ASD-STE100/);
+  assert.match(analysisRequest.messages[1].content, /Call date: 2026-10-28/);
+  assert(analysisRequest.messages[1].content.endsWith(call.transcript));
+  assert(analysisRequest.max_tokens >= 3000);
+  const tasks = await listCallTasks(call.id);
+  assert.match(tasks[0].description, /Email: office@example.test/);
+});
+
 test("linked task reads stay scoped to the call across multiple pages", async () => {
   for (let index = 0; index < 201; index++) {
     const id = String(index).padStart(4, "0");
@@ -144,8 +211,9 @@ test("linked task reads stay scoped to the call across multiple pages", async ()
   const tasks = await listCallTasks(call.id);
   assert.equal(tasks.length, 201);
   assert(!tasks.some((task) => task.id === "unrelated"));
-  assert.equal(targetRequests.length, 2);
-  assert(targetRequests.every((url) => url.searchParams.get("filter") === `targetAgencyCallId[eq]:"${call.id}"`));
+  const pages = targetRequests.filter((url) => url.searchParams.get("filter")?.startsWith("targetAgencyCallId"));
+  assert.equal(pages.length, 2);
+  assert(pages.every((url) => url.searchParams.get("filter") === `targetAgencyCallId[eq]:"${call.id}"`));
 });
 
 test("manual analysis exposes task failures separately, lists persisted tasks and retries", async (t) => {
@@ -162,7 +230,11 @@ test("manual analysis exposes task failures separately, lists persisted tasks an
   assert.equal((await retried.json()).taskSync.error, null);
   const tasks = await originalFetch(`${base}/api/calls/${call.id}/tasks`, { headers }).then((res) => res.json());
   assert.equal(tasks.length, 1);
-  assert.equal(tasks[0].title, proposed[0].title);
+  assert.equal(tasks[0].title, modelTasks[0].title);
+  assert.match(tasks[0].description, /## Procedure/);
+  assert.match(tasks[0].description, /office@example.test/);
+  assert.match(tasks[0].description, /## Source records/);
+  assert.deepEqual(tasks[0].contacts, [{ type: "prospect", id: call.agencyProspectId }, { type: "lead", id: call.agencyLeadId }]);
   assert.equal(table("tasks").size, 1);
   failRead = true;
   const unavailable = await originalFetch(`${base}/api/calls/${call.id}/tasks`, { headers });

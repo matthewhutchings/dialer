@@ -92,6 +92,7 @@ async function maybeAnalyze(callId: string, transcript: string, call: AgencyCall
     const analysis = await analyzeCallTranscript(transcript, {
       direction: call.direction,
       durationSeconds: call.durationSeconds,
+      startedAt: call.startedAt,
     });
     await updateTwenty<AgencyCall>('agencyCalls', callId, {
       aiSummary: analysis.summary,

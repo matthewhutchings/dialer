@@ -183,6 +183,18 @@ The browser holds the SIP call itself.
    existing task edits and completion status are preserved. No task is
    created when the transcript contains no agreed follow-up. Task-write
    failures are reported separately from a successfully saved AI review.
+   Task instructions use ASD-STE100-style controlled English, not certified
+   standard compliance: active voice, one instruction per numbered step,
+   consistent terms and at most 20 words per procedural item. Titles name
+   the action, specific deliverable and recipient. Each execution brief
+   contains the objective, recipient, transcript-confirmed email, procedure,
+   observable completion criteria, call evidence, missing inputs and source
+   CRM records. An email must occur in the quoted call evidence; a clearly
+   spoken "at" or "dot" can be normalized. Missing information is not guessed.
+   A task is not permission for an AI agent to send messages automatically.
+   New analysis tasks require a linked contact. Re-analysis repairs existing
+   call-only task links, even when it finds no new follow-up. Late caller
+   association also repairs task links. Existing task edits are not replaced.
 4. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
    another member holds it you get a 409 naming them, and the dial aborts
    before any SIP traffic.

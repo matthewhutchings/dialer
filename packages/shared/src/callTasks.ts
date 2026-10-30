@@ -5,6 +5,7 @@ export interface CallTask {
   status: string;
   dueAt: string | null;
   assigneeId: string | null;
+  contacts: { type: "prospect" | "lead"; id: string }[];
 }
 
 export interface CallTaskSync {

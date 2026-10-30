@@ -455,7 +455,7 @@ export async function handleVoiceEvent(event: string, payload: Record<string, un
       }).join("\n").slice(0, 60_000);
       if (transcript) await updateTwenty("agencyCalls", call.id, { transcript, transcriptionStatus: "READY" });
       if (event === "call.conversation.ended" && transcript.length >= 10 && isAiConfigured()) {
-        const analysis = await analyzeCallTranscript(transcript, { direction: call.direction || "OUTBOUND", durationSeconds: call.durationSeconds });
+        const analysis = await analyzeCallTranscript(transcript, { direction: call.direction || "OUTBOUND", durationSeconds: call.durationSeconds, startedAt: call.startedAt });
         await updateTwenty("agencyCalls", call.id, {
           summary: analysis.summary, aiSummary: analysis.summary, aiSentiment: analysis.sentiment,
           aiScore: analysis.score, aiKeyPoints: JSON.stringify(analysis.keyPoints),
