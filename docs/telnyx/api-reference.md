@@ -15,6 +15,47 @@ parallel-web-search dumps used to assemble this page.
 - SDK: `client.calls.actions.startRecording(callControlId, {format, channels, transcription})`.
 - [Commands/resources overview](https://developers.telnyx.com/docs/voice/programmable-voice/voice-api-commands-and-resources).
 
+## Single-pass recording transcription
+
+- Dialer recordings start with `transcription: false`. On `call.recording.saved`,
+  both webhook receivers resolve a fresh recording download URL and call
+  `client.ai.audio.transcribe({model: "openai/whisper-large-v3-turbo",
+  language: "en", file_url, response_format: "json"}, {maxRetries: 0, timeout: 120000})`.
+  This uses `POST /ai/audio/transcriptions`, not recording-start transcription.
+  WAV is preferred when available; MP3 is otherwise used. There are no separate
+  channel passes, automatic model fallbacks, email hints, or re-transcription on Analyse.
+- The transcript is saved before AI review and native contact-linked follow-up
+  tasks are generated. Analyse/Re-analyse only reads that saved text. Existing
+  transcripts are preserved; this change does not automatically replace historical
+  transcripts. AI voice calls retain their existing conversation-event transcript
+  pipeline and do not request an additional recording transcription.
+- A permanent `agencyRecordingTranscription` row uses a deterministic UUID per
+  recording. Its primary key arbitrates concurrent deliveries across deployments.
+  Duplicate events reuse the cached result; legacy transcription events cannot
+  overwrite a Whisper-owned call. Reconciliation uses the same service.
+- The guarantee is **at most one paid request per recording**, not guaranteed
+  completion: a timeout, lost reservation response, or interrupted process can
+  leave the outcome uncertain. Such attempts are never resubmitted automatically.
+  Provider/empty-result failures set the call's transcription status to `FAILED`.
+  A cached `COMPLETED` result can repair a failed call write without another pass.
+  An interrupted `SUBMITTED` attempt needs administrator investigation; it must
+  not be deleted or reset merely because it is old.
+
+### Deployment
+
+1. Apply the additive Twenty schema with `bun run twenty:schema` (or authenticated
+   `POST /api/setup/twenty`) before enabling the new webhook code. Verify it with
+   `bun run twenty:schema:check`. This creates `agencyRecordingTranscriptions`
+   and its `callId`, `recordingId`, `model`, `state`, and `transcript` fields.
+2. Set `TELNYX_API_KEY` on the webhook deployment as well as the backend, plus
+   `TWENTY_BASE_URL`, `TWENTY_API_KEY`, and `TELNYX_WEBHOOK_TOKEN`. Its Telnyx
+   account must have access to the selected audio model. Keep the existing
+   OpenAI-compatible analysis key configured for review/tasks.
+3. Use a webhook runtime/proxy budget that covers the 120-second audio request
+   plus CRM writes and AI analysis. The legacy Vercel function requests 300 seconds;
+   verify that the deployment plan supports it. Delivery retries do not repeat
+   the audio request.
+
 ## Call recordings
 
 - [`GET /recordings`](https://developers.telnyx.com/api-reference/call-recordings/list-all-call-recordings)

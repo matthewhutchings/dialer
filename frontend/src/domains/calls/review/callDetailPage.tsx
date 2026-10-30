@@ -306,7 +306,9 @@ export function CallDetailPage() {
               {call.transcript ? (
                 <p className="max-h-[420px] overflow-y-auto text-[14px] leading-relaxed text-[var(--ods-text-primary)] whitespace-pre-wrap">{call.transcript}</p>
               ) : (
-                <EmptyState>{hasAudio ? "The transcript is not ready yet." : "A transcript appears once there is a recording."}</EmptyState>
+                <EmptyState>{call.transcriptionStatus === "FAILED"
+                  ? "Transcription failed or its result is uncertain. Automatic resubmission is disabled to prevent duplicate charges. Contact an administrator."
+                  : hasAudio ? "Waiting for the single Telnyx Whisper transcription. Analyse uses the saved transcript and does not transcribe again." : "A transcript appears once there is a recording."}</EmptyState>
               )}
             </ReportCard>
           </div>

@@ -5,6 +5,8 @@ import { resolveActor } from "../../lib/twenty/actor/index.js";
 import { telnyxClient, telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../../lib/ai/analysis/index.js";
 import { listCallTasks, repairCallTaskLinks, syncFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
+import { transcribeRecording } from "../../lib/ai/analysis/transcribeRecording.js";
+import { analyzeSavedTranscript } from "../../lib/ai/analysis/analyzeSavedTranscript.js";
 import { createLogger } from "../../lib/logger/index.js";
 import type { AgencyCall } from "./types.js";
 import { mapCall, sortNewestFirst, splitStatus } from "./helpers/index.js";
@@ -99,7 +101,7 @@ router.get("/:id/audio", async (req, res) => {
   }
 });
 
-// POST /api/calls/:id/record — start Telnyx server-side recording (+transcription)
+// POST /api/calls/:id/record — record only; recording.saved starts one Whisper pass.
 // for the live call. Plain SIP-trunked calls are NOT auto-recorded; this is
 // what creates the recording object that later arrives via call.recording.saved.
 router.post("/:id/record", async (req, res) => {
@@ -121,8 +123,8 @@ router.post("/:id/record", async (req, res) => {
       started = await tx.calls.actions.startRecording(call.telnyxCallId, {
         format: "mp3",
         channels: "dual",
-        transcription: true,
-      } as any);
+        transcription: false,
+      });
     } catch (err: any) {
       log.info(`Telnyx record_start failed: ${telnyxErrorMessage(err)}`);
       res.status(502).json({ error: "Telnyx record_start failed", details: telnyxErrorMessage(err) });
@@ -155,6 +157,8 @@ router.post("/:id/reconcile", async (req, res) => {
   try {
     const call = await getTwenty<AgencyCall>('agencyCalls', req.params.id as string);
     if (call.telnyxRecordingId) {
+      const text = await transcribeRecording(call.id);
+      if (text) await analyzeSavedTranscript(call.id, text, call);
       res.json({ attached: true, already: true });
       return;
     }
@@ -188,12 +192,15 @@ router.post("/:id/reconcile", async (req, res) => {
     }
     const patch: Record<string, unknown> = {
       telnyxRecordingId: match.id,
-      transcriptionStatus: "PENDING",
+      transcriptionStatus: call.transcript?.trim() ? "READY" : "PENDING",
     };
     if (match?.download_urls?.mp3) patch.recordingUrl = match.download_urls.mp3;
     else if (match?.download_urls?.wav) patch.recordingUrl = match.download_urls.wav;
     if (match?.call_control_id) patch.telnyxCallId = match.call_control_id;
-    const updated = await updateTwenty<AgencyCall>('agencyCalls', call.id, patch);
+    await updateTwenty<AgencyCall>('agencyCalls', call.id, patch);
+    const text = await transcribeRecording(call.id);
+    if (text) await analyzeSavedTranscript(call.id, text, call);
+    const updated = await getTwenty<AgencyCall>('agencyCalls', call.id);
     log.info(`Reconciled recording: call=${call.id} rec=${match.id}`);
     res.json({ attached: true, telnyxRecordingId: match.id, call: mapCall(updated) });
   } catch (err: any) {

@@ -36,6 +36,21 @@ export const SCHEMA_OBJECTS: SchemaObject[] = [
     ],
   },
   {
+    nameSingular: "agencyRecordingTranscription",
+    namePlural: "agencyRecordingTranscriptions",
+    labelSingular: "Recording Transcription",
+    labelPlural: "Recording Transcriptions",
+    description: "Permanent single-attempt recording transcription reservations and recoverable results. Do not delete uncertain attempts.",
+    icon: "IconMicrophone",
+    fields: [
+      { name: "callId", type: "TEXT", label: "Call ID" },
+      { name: "recordingId", type: "TEXT", label: "Recording ID" },
+      { name: "model", type: "TEXT", label: "Model" },
+      { name: "state", type: "TEXT", label: "State" },
+      { name: "transcript", type: "TEXT", label: "Transcript" },
+    ],
+  },
+  {
     nameSingular: "agencyVoiceLock",
     namePlural: "agencyVoiceLocks",
     labelSingular: "Voice Lock",

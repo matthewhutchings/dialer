@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { callResultMachine } from "@dialer/shared";
 import { listTwenty, createTwenty, updateTwenty } from "../../../lib/twenty/client/index.js";
-import { analyzeCallTranscript, isAiConfigured } from "../../../lib/ai/analysis/index.js";
-import { syncFollowUpTasks } from "../../../lib/ai/analysis/followUpTasks.js";
+import { analyzeSavedTranscript as maybeAnalyze } from "../../../lib/ai/analysis/analyzeSavedTranscript.js";
+import { hasRecordingTranscription, transcribeRecording } from "../../../lib/ai/analysis/transcribeRecording.js";
 import { createLogger } from "../../../lib/logger/index.js";
 import type { AgencyCall } from "../../calls/types.js";
 import { handleBridgeEvent, handleIncomingCall } from "../../../lib/audioBridge/index.js";
@@ -26,8 +26,8 @@ const log = createLogger('telnyx-webhook');
  * Handled events:
  *   call.initiated / call.answered / call.gather.ended / call.hangup
  *                                      -> phone audio sessions (lib/audioBridge)
- *   call.recording.saved               -> attach recording to agencyCalls (by telnyxCallId)
- *   call.recording.transcription.saved -> attach transcript, then AI-analyze
+ *   call.recording.saved               -> attach recording, one Whisper pass, AI review/tasks
+ *   call.recording.transcription.saved -> legacy transcripts only; never overwrite Whisper
  *   call.recording.error               -> transcriptionStatus=FAILED
  * Everything else -> 200 + logged (Telnyx retries 500s, so only fail on real errors).
  *
@@ -78,40 +78,6 @@ async function findOpenCallByParties(from?: string, to?: string): Promise<Agency
   return best;
 }
 
-async function maybeAnalyze(callId: string, transcript: string, call: AgencyCall): Promise<void> {
-  if (!isAiConfigured()) {
-    // Logged, not silent: a missing OPENAI_API_KEY used to return here with no
-    // trace, so an unconfigured deployment looked identical to one where
-    // analysis simply had not run yet.
-    log.warn(
-      `AI analysis skipped for call=${callId}: OPENAI_API_KEY not configured - ai* fields left unset`,
-    );
-    return;
-  }
-  try {
-    const analysis = await analyzeCallTranscript(transcript, {
-      direction: call.direction,
-      durationSeconds: call.durationSeconds,
-      startedAt: call.startedAt,
-    });
-    await updateTwenty<AgencyCall>('agencyCalls', callId, {
-      aiSummary: analysis.summary,
-      aiSentiment: analysis.sentiment,
-      aiScore: analysis.score,
-      aiKeyPoints: JSON.stringify(analysis.keyPoints),
-      aiScores: JSON.stringify(analysis.scores),
-      aiConfidence: analysis.confidence,
-      aiModel: analysis.model,
-      aiAnalyzedAt: new Date().toISOString(),
-      summary: analysis.summary,
-    });
-    log.info(`AI analysis stored via webhook: call=${callId} score=${analysis.score}`);
-    await syncFollowUpTasks(call, analysis.tasks);
-  } catch (err: any) {
-    log.info(`Webhook AI analysis skipped for call=${callId}: ${err.message}`);
-  }
-}
-
 async function handleRecordingSaved(p: any): Promise<string> {
   const callControlId: string | undefined = p?.call_control_id;
   const recordingId: string | undefined = p?.recording_id ?? p?.recording_ids?.[0];
@@ -121,10 +87,12 @@ async function handleRecordingSaved(p: any): Promise<string> {
 
   const existing = await findCallByTelnyxId(callControlId);
   if (existing) {
-    const patch: Record<string, unknown> = { transcriptionStatus: "PENDING" };
+    const patch: Record<string, unknown> = {};
     if (recordingId) patch.telnyxRecordingId = recordingId;
     if (downloadUrl) patch.recordingUrl = downloadUrl;
     await updateTwenty<AgencyCall>('agencyCalls', existing.id, patch);
+    const text = await transcribeRecording(existing.id);
+    if (text) await maybeAnalyze(existing.id, text, existing);
     return `attached to ${existing.id}`;
   }
 
@@ -134,11 +102,12 @@ async function handleRecordingSaved(p: any): Promise<string> {
   if (orphan) {
     const patch: Record<string, unknown> = {
       telnyxCallId: callControlId,
-      transcriptionStatus: "PENDING",
     };
     if (recordingId) patch.telnyxRecordingId = recordingId;
     if (downloadUrl) patch.recordingUrl = downloadUrl;
     await updateTwenty<AgencyCall>('agencyCalls', orphan.id, patch);
+    const text = await transcribeRecording(orphan.id);
+    if (text) await maybeAnalyze(orphan.id, text, orphan);
     return `attached to open row ${orphan.id} (parties fallback)`;
   }
 
@@ -153,6 +122,8 @@ async function handleRecordingSaved(p: any): Promise<string> {
     ...(downloadUrl ? { recordingUrl: downloadUrl } : {}),
     transcriptionStatus: "PENDING",
   });
+  const text = await transcribeRecording(created.id);
+  if (text) await maybeAnalyze(created.id, text, created);
   return `created ${created.id}`;
 }
 
@@ -162,9 +133,11 @@ async function handleTranscriptionSaved(p: any): Promise<string> {
     p?.transcript ?? p?.transcription_text ?? p?.text ?? p?.transcription?.text;
   if (!callControlId) return "missing call_control_id";
   const existing = await findCallByTelnyxId(callControlId);
+  if (existing && await hasRecordingTranscription(existing.id)) return "ignored legacy transcript: Whisper owns this call";
   if (!existing) {
     const orphan = await findOpenCallByParties(p?.from, p?.to);
     if (!orphan) return "no matching call row";
+    if (await hasRecordingTranscription(orphan.id)) return "ignored legacy transcript: Whisper owns this call";
     const patch: Record<string, unknown> = { telnyxCallId: callControlId, transcriptionStatus: "READY" };
     if (text) patch.transcript = text;
     await updateTwenty<AgencyCall>('agencyCalls', orphan.id, patch);
@@ -232,7 +205,7 @@ router.post(["/telnyx", "/"], async (req, res) => {
       const ccid: string | undefined = payload?.call_control_id;
       if (ccid) {
         const existing = await findCallByTelnyxId(ccid);
-        if (existing) await updateTwenty<AgencyCall>('agencyCalls', existing.id, { transcriptionStatus: "FAILED" });
+        if (existing && !existing.transcript?.trim()) await updateTwenty<AgencyCall>('agencyCalls', existing.id, { transcriptionStatus: "FAILED" });
       }
       result = "marked failed";
     }

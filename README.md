@@ -545,7 +545,7 @@ sequenceDiagram
     Note over SP,API: STEP 2 of 2 - stamp the id BEFORE /record,<br/>otherwise /record reads a row with no telnyxCallId and 400s
 
     SP->>API: POST /api/calls/:id/record
-    API->>TX: calls.actions.startRecording {mp3, dual, transcription:true}
+    API->>TX: calls.actions.startRecording {mp3, dual, transcription:false}
     TX-->>API: recording_id
     API->>TW: PATCH agencyCalls telnyxRecordingId, transcriptionStatus=PENDING
     API-->>SP: ok
@@ -554,13 +554,14 @@ sequenceDiagram
     SP->>API: POST /api/twenty/phones/:id/state {memberId, state:ACTIVE}
     API->>TW: PATCH agencyPhones callState=ACTIVE
 
-    TX-->>SP: call.recording.saved
-    TX-->>SP: call.recording.transcription.saved
-    Note over TX,SP: delivered to the webhook receiver, not the API.<br/>receiver PATCHes recordingUrl then transcript + transcriptionStatus=READY
-
-    TX->>API: POST /api/webhooks/telnyx?token= (or Vercel /api/telnyx-webhook?token=)
+    TX->>API: call.recording.saved to /api/webhooks/telnyx?token= (or Vercel /api/telnyx-webhook?token=)
     Note over TX,API: same contract both surfaces:<br/>token-gated, 200 on unknown events, 500 only on real errors (Telnyx retries)
-    API->>TW: PATCH agencyCalls telnyxRecordingId/recordingUrl, transcriptionStatus=PENDING
+    API->>TW: PATCH agencyCalls telnyxRecordingId/recordingUrl
+    API->>TX: recordings.retrieve for fresh download URL
+    API->>TW: Create permanent agencyRecordingTranscription reservation
+    API->>TX: ai.audio.transcribe {Whisper large-v3-turbo, language:en, file_url} (no retries)
+    TX-->>API: transcript text
+    API->>TW: Save transcription result on reservation (recoverable)
     API->>TW: PATCH agencyCalls transcript, transcriptionStatus=READY
     API->>AI: chat/completions {transcript} (single OPENAI-compatible key)
     AI-->>API: {summary, sentiment, score 0-100, keyPoints, confidence}
@@ -586,7 +587,7 @@ sequenceDiagram
     API-->>SP: 302 to the fresh URL
     Note over API,TX: the Telnyx API key never leaves the server
 
-    A->>SP: analyze (or auto after transcription webhook)
+    A->>SP: analyze saved transcript (or auto after Whisper completes)
     SP->>API: POST /api/calls/:id/analyze
     API->>AI: chat/completions {transcript}
     AI-->>API: {summary, sentiment, score, keyPoints, confidence}
@@ -1148,7 +1149,7 @@ served inside Twenty at `/dialer/*`.
 | GET | `/api/setup/twenty/status` | Every manifest object and field, with `exists`. |
 | GET | `/api/calls` | Newest first. |
 | GET | `/api/calls/:id/audio` | 302 to a freshly resolved Telnyx mp3. |
-| POST | `/api/calls/:id/record` | `record_start` with transcription. Needs `telnyxCallId`. |
+| POST | `/api/calls/:id/record` | `record_start` without inline transcription; one Whisper pass after recording saved. Needs `telnyxCallId`. |
 | POST | `/api/calls/:id/reconcile` | Repair path: match a recording by from and to. |
 | POST | `/api/calls` | Creates the row. Best effort, also stamps `currentCallId`. |
 | PATCH | `/api/calls/:id` | Disposition, recording, transcript, meeting, `debugLog`. |

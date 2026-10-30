@@ -112,5 +112,16 @@ test("call review shows native tasks, sync failures, retries and saved Twenty st
   await page.setViewportSize({ width: 390, height: 844 });
   await analyze.scrollIntoViewIfNeeded();
   assert(await analyze.isVisible());
+  call.transcript = "";
+  call.transcriptionStatus = "FAILED";
+  await page.reload();
+  await panel.waitFor();
+  assert.equal(await panel.getByRole("button", { name: /analyze/i }).count(), 0);
+  await page.getByRole("tab", { name: "Recording", exact: true }).click();
+  await page.getByText(/Transcription failed or its result is uncertain/).waitFor();
+  call.transcriptionStatus = "PENDING";
+  call.telnyxRecordingId = "recording-test";
+  await page.goto(`http://127.0.0.1:${address.port}/history/${call.id}?tab=recording`);
+  await page.getByText(/Waiting for the single Telnyx Whisper transcription/).waitFor();
   assert.deepEqual(errors, []);
 });

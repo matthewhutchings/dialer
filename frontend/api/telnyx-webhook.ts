@@ -5,22 +5,24 @@
  *   https://<vercel-app>/api/telnyx-webhook?token=<TELNYX_WEBHOOK_TOKEN>
  *
  * Env (Vercel project settings, never bundled):
- *   TWENTY_BASE_URL, TWENTY_API_KEY, TELNYX_WEBHOOK_TOKEN
+ *   TWENTY_BASE_URL, TWENTY_API_KEY, TELNYX_WEBHOOK_TOKEN, TELNYX_API_KEY
  * Build note: SIP_* vars bake into the SPA at build time (Vite).
  * Rebuild with current project env after any env change.
  *
  * Handled events:
- *   call.recording.saved                -> attach recording to agencyCalls (by telnyxCallId;
+ *   call.recording.saved                -> attach recording, one Whisper pass, AI review/tasks (by telnyxCallId;
  *                                          falls back to newest recording-less from/to row
  *                                          within 2h, for tabs closed before the id stamp)
- *   call.recording.transcription.saved  -> attach transcript to agencyCalls (same fallback)
+ *   call.recording.transcription.saved  -> legacy transcripts only; never overwrite Whisper
  *   message.received / message.finalized -> acknowledged (SMS pipeline owns these next)
  * Everything else -> 200 + logged.
  */
 
-import { analyzeCallTranscript, isAiConfigured } from "../../backend/src/lib/ai/analysis/index.js";
-import { syncFollowUpTasks } from "../../backend/src/lib/ai/analysis/followUpTasks.js";
+import { analyzeSavedTranscript } from "../../backend/src/lib/ai/analysis/analyzeSavedTranscript.js";
 import type { AgencyCall } from "../../backend/src/routes/calls/types.js";
+import { hasRecordingTranscription, transcribeRecording } from "../../backend/src/lib/ai/analysis/transcribeRecording.js";
+
+export const config = { maxDuration: 300 };
 
 type VercelReq = {
   method?: string;
@@ -157,10 +159,12 @@ async function handleRecordingSaved(p: any): Promise<string> {
 
   const existing = await findCallByTelnyxId(callControlId);
   if (existing) {
-    const patch: Record<string, unknown> = { transcriptionStatus: "PENDING" };
+    const patch: Record<string, unknown> = {};
     if (recordingId) patch.telnyxRecordingId = recordingId;
     if (downloadUrl) patch.recordingUrl = downloadUrl;
     await twentyRest("PATCH", `agencyCalls/${existing.id}`, patch);
+    const text = await transcribeRecording(existing.id);
+    if (text) await attachAnalysis(existing, text);
     return `attached to ${existing.id}`;
   }
 
@@ -172,11 +176,12 @@ async function handleRecordingSaved(p: any): Promise<string> {
   if (orphan) {
     const patch: Record<string, unknown> = {
       telnyxCallId: callControlId,
-      transcriptionStatus: "PENDING",
     };
     if (recordingId) patch.telnyxRecordingId = recordingId;
     if (downloadUrl) patch.recordingUrl = downloadUrl;
     await twentyRest("PATCH", `agencyCalls/${orphan.id}`, patch);
+    const text = await transcribeRecording(orphan.id);
+    if (text) await attachAnalysis(orphan, text);
     return `attached to open row ${orphan.id} (parties fallback)`;
   }
 
@@ -192,7 +197,10 @@ async function handleRecordingSaved(p: any): Promise<string> {
     ...(downloadUrl ? { recordingUrl: downloadUrl } : {}),
     transcriptionStatus: "PENDING",
   });
-  return `created ${unwrapItem(created)?.id}`;
+  const call = unwrapItem(created);
+  const text = await transcribeRecording(call.id);
+  if (text) await attachAnalysis(call, text);
+  return `created ${call.id}`;
 }
 
 async function handleTranscriptionSaved(p: any): Promise<string> {
@@ -201,12 +209,14 @@ async function handleTranscriptionSaved(p: any): Promise<string> {
     p?.transcript ?? p?.transcription_text ?? p?.text ?? p?.transcription?.text;
   if (!callControlId) return "missing call_control_id";
   const existing = await findCallByTelnyxId(callControlId);
+  if (existing && await hasRecordingTranscription(existing.id)) return "ignored legacy transcript: Whisper owns this call";
   if (!existing) {
     // Same orphan case as recordings: the row never got its telnyxCallId
     // (e.g. the recording event is still in flight). Match by parties so
     // the transcript is not dropped, and stamp the id for later events.
     const orphan = await findOpenCallByParties(p?.from, p?.to);
     if (!orphan) return "no matching call row";
+    if (await hasRecordingTranscription(orphan.id)) return "ignored legacy transcript: Whisper owns this call";
     const patch: Record<string, unknown> = { telnyxCallId: callControlId, transcriptionStatus: "READY" };
     if (text) patch.transcript = text;
     await twentyRest("PATCH", `agencyCalls/${orphan.id}`, patch);
@@ -225,24 +235,7 @@ async function handleTranscriptionSaved(p: any): Promise<string> {
  * Never throws — the transcript attach above already succeeded.
  */
 async function attachAnalysis(call: AgencyCall, transcript: string): Promise<void> {
-  if (!isAiConfigured() || transcript.trim().length < 10) return;
-  try {
-    const analysis = await analyzeCallTranscript(transcript, call);
-    await twentyRest("PATCH", `agencyCalls/${call.id}`, {
-      aiSummary: analysis.summary,
-      aiSentiment: analysis.sentiment,
-      aiScore: analysis.score,
-      aiKeyPoints: JSON.stringify(analysis.keyPoints),
-      aiScores: JSON.stringify(analysis.scores),
-      aiConfidence: analysis.confidence,
-      aiModel: analysis.model,
-      aiAnalyzedAt: new Date().toISOString(),
-      summary: analysis.summary,
-    });
-    await syncFollowUpTasks(call, analysis.tasks);
-  } catch (err: any) {
-    console.error(`analysis failed for ${call.id}:`, err?.message || err);
-  }
+  await analyzeSavedTranscript(call.id, transcript, call);
 }
 
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
@@ -278,7 +271,7 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
       const ccid: string | undefined = payload?.call_control_id;
       if (ccid) {
         const existing = await findCallByTelnyxId(ccid);
-        if (existing) await twentyRest("PATCH", `agencyCalls/${existing.id}`, { transcriptionStatus: "FAILED" });
+        if (existing && !existing.transcript?.trim()) await twentyRest("PATCH", `agencyCalls/${existing.id}`, { transcriptionStatus: "FAILED" });
       }
       result = "marked failed";
     } else if (eventType === "message.received" || eventType === "message.finalized") {
