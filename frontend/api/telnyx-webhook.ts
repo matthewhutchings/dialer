@@ -18,6 +18,10 @@
  * Everything else -> 200 + logged.
  */
 
+import { analyzeCallTranscript, isAiConfigured } from "../../backend/src/lib/ai/analysis/index.js";
+import { syncFollowUpTasks } from "../../backend/src/lib/ai/analysis/followUpTasks.js";
+import type { AgencyCall } from "../../backend/src/routes/calls/types.js";
+
 type VercelReq = {
   method?: string;
   query?: Record<string, string | string[]>;
@@ -34,9 +38,6 @@ const TWENTY_KEY = process.env.TWENTY_API_KEY || "";
 const HOOK_TOKEN = process.env.TELNYX_WEBHOOK_TOKEN || "";
 // Single AI key (OpenAI-compatible). When set, transcription webhooks also
 // write the rating back onto the same agencyCalls row.
-const AI_KEY = process.env.OPENAI_API_KEY || "";
-const AI_BASE = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-const AI_MODEL = process.env.OPENAI_ANALYSIS_MODEL || "gpt-4o-mini";
 
 const TW_HEADERS: Record<string, string> = {
   Authorization: `Bearer ${TWENTY_KEY}`,
@@ -209,13 +210,13 @@ async function handleTranscriptionSaved(p: any): Promise<string> {
     const patch: Record<string, unknown> = { telnyxCallId: callControlId, transcriptionStatus: "READY" };
     if (text) patch.transcript = text;
     await twentyRest("PATCH", `agencyCalls/${orphan.id}`, patch);
-    if (text) await attachAnalysis(orphan.id, text);
+    if (text) await attachAnalysis(orphan, text);
     return `transcript attached to open row ${orphan.id} (parties fallback)`;
   }
   const patch: Record<string, unknown> = { transcriptionStatus: "READY" };
   if (text) patch.transcript = text;
   await twentyRest("PATCH", `agencyCalls/${existing.id}`, patch);
-  if (text) await attachAnalysis(existing.id, text);
+  if (text) await attachAnalysis(existing, text);
   return `transcript attached to ${existing.id}`;
 }
 
@@ -223,62 +224,24 @@ async function handleTranscriptionSaved(p: any): Promise<string> {
  * Best-effort AI rating on the same row (single OpenAI-compatible key).
  * Never throws — the transcript attach above already succeeded.
  */
-async function attachAnalysis(callId: string, transcript: string): Promise<void> {
-  if (!AI_KEY || transcript.trim().length < 10) return;
+async function attachAnalysis(call: AgencyCall, transcript: string): Promise<void> {
+  if (!isAiConfigured() || transcript.trim().length < 10) return;
   try {
-    const clean = transcript.trim().slice(0, 12_000);
-    const res = await fetch(`${AI_BASE}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${AI_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        temperature: 0.2,
-        max_tokens: 600,
-        messages: [
-          {
-            role: "system",
-            content: 'You analyze cold-call transcripts. Reply with JSON only: {"summary": string, "sentiment": "POSITIVE"|"NEUTRAL"|"NEGATIVE"|"MIXED", "score": 0-100, "scores": {"conversion": 1-5, "politeness": 1-5, "questioning": 1-5, "engagement": 1-5, "sentiment": 1-5}, "keyPoints": string[], "confidence": 0-1}. Sentiment reflects the PROSPECT.',
-          },
-          { role: "user", content: `Transcript:\n${clean}` },
-        ],
-      }),
-    });
-    if (!res.ok) throw new Error(`AI provider ${res.status}`);
-    const json: any = await res.json();
-    const content: string = json?.choices?.[0]?.message?.content ?? "{}";
-    const start = content.indexOf("{");
-    const end = content.lastIndexOf("}");
-    const parsed: any = JSON.parse(start >= 0 && end > start ? content.slice(start, end + 1) : content);
-    const sentiment = ["POSITIVE", "NEUTRAL", "NEGATIVE", "MIXED"].includes(String(parsed?.sentiment || "").toUpperCase())
-      ? String(parsed.sentiment).toUpperCase()
-      : "NEUTRAL";
-    const summary = String(parsed?.summary || "No summary returned.").slice(0, 1000);
-    const num = (v: unknown, min: number, max: number, fb: number) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fb;
-    };
-    const overall = num(parsed?.score, 0, 100, 50);
-    const fb15 = Math.min(5, Math.max(1, Math.round(overall / 20)));
-    const raw = (parsed?.scores ?? {}) as Record<string, unknown>;
-    await twentyRest("PATCH", `agencyCalls/${callId}`, {
-      aiSummary: summary,
-      aiSentiment: sentiment,
-      aiScore: overall,
-      aiKeyPoints: JSON.stringify(Array.isArray(parsed?.keyPoints) ? parsed.keyPoints.map(String).slice(0, 5) : []),
-      aiScores: JSON.stringify({
-        conversion: num(raw.conversion, 1, 5, fb15),
-        politeness: num(raw.politeness, 1, 5, fb15),
-        questioning: num(raw.questioning, 1, 5, fb15),
-        engagement: num(raw.engagement, 1, 5, fb15),
-        sentiment: num(raw.sentiment, 1, 5, fb15),
-      }),
-      aiConfidence: Math.min(1, Math.max(0, Number(parsed?.confidence ?? 0.5) || 0.5)),
-      aiModel: AI_MODEL,
+    const analysis = await analyzeCallTranscript(transcript, call);
+    await twentyRest("PATCH", `agencyCalls/${call.id}`, {
+      aiSummary: analysis.summary,
+      aiSentiment: analysis.sentiment,
+      aiScore: analysis.score,
+      aiKeyPoints: JSON.stringify(analysis.keyPoints),
+      aiScores: JSON.stringify(analysis.scores),
+      aiConfidence: analysis.confidence,
+      aiModel: analysis.model,
       aiAnalyzedAt: new Date().toISOString(),
-      summary,
+      summary: analysis.summary,
     });
+    await syncFollowUpTasks(call, analysis.tasks);
   } catch (err: any) {
-    console.error(`analysis failed for ${callId}:`, err?.message || err);
+    console.error(`analysis failed for ${call.id}:`, err?.message || err);
   }
 }
 

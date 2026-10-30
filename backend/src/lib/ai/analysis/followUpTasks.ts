@@ -1,43 +1,108 @@
-import { createTwenty, listTwenty, deleteTwenty } from "../../twenty/client/index.js";
+import { v5 as uuidv5 } from "uuid";
+import type { CallTask, CallTaskSync } from "@dialer/shared";
+import { createTwenty, listTwenty, getTwenty, fetchTwenty, unwrapTwentyList, type TwentyListResponse } from "../../twenty/client/index.js";
 import { createLogger } from "../../logger/index.js";
 import type { FollowUpTask } from "./types.js";
 
 const log = createLogger("followup-tasks");
 
-interface CallRef {
+export interface CallRef {
   id: string;
   agencyProspectId?: string | null;
   agencyLeadId?: string | null;
   createdByMemberId?: string | null;
 }
 
+interface TaskRow {
+  id: string;
+  title?: string;
+  status?: string;
+  bodyV2?: { markdown?: string | null } | null;
+  dueAt?: string | null;
+  assigneeId?: string | null;
+}
+
+async function callTargets(callId: string): Promise<{ id: string; taskId: string }[]> {
+  const targets: { id: string; taskId: string }[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchTwenty<TwentyListResponse<{ id: string; taskId: string }>>("taskTargets", {
+      limit: 200, startingAfter: cursor, query: { filter: `targetAgencyCallId[eq]:"${callId}"` },
+    });
+    targets.push(...unwrapTwentyList<{ id: string; taskId: string }>(page, "taskTargets"));
+    if (!page.pageInfo?.hasNextPage) break;
+    const next = page.pageInfo.endCursor;
+    if (!next || next === cursor) throw new Error("Twenty did not return the next task page.");
+    cursor = next;
+  } while (cursor);
+  return targets;
+}
+
+export async function listCallTasks(callId: string): Promise<CallTask[]> {
+  const targets = await callTargets(callId);
+  return Promise.all([...new Set(targets.map((target) => target.taskId))].map(async (id) => {
+    const task = await getTwenty<TaskRow>("tasks", id);
+    return {
+      id: task.id, title: task.title ?? "", status: task.status ?? "",
+      description: task.bodyV2?.markdown ?? "", dueAt: task.dueAt ?? null, assigneeId: task.assigneeId ?? null,
+    };
+  }));
+}
+
+async function ensureRecord<T extends { id: string }>(object: string, id: string, body: Record<string, unknown>): Promise<T> {
+  const [existing] = await listTwenty<T>(object, { limit: 1, filter: `id[eq]:"${id}"` });
+  if (existing) return existing;
+  try {
+    return await createTwenty<T>(object, { id, ...body });
+  } catch (err) {
+    // A concurrent request or a lost create response may already have saved it.
+    const [saved] = await listTwenty<T>(object, { limit: 1, filter: `id[eq]:"${id}"` });
+    if (saved) return saved;
+    throw err;
+  }
+}
+
 /**
  * Creates native Twenty tasks from an analysis, linked to the call and its contact.
- * Safe to run twice for one call: if any task already points at the call, nothing is added.
- * Returns how many tasks were created.
+ * Stable IDs let retries finish partially linked tasks without duplicating them.
+ * Existing task status, edits and assignment are never overwritten.
  */
 export async function createFollowUpTasks(call: CallRef, tasks: FollowUpTask[]): Promise<number> {
   if (!tasks.length) return 0;
-  const existing = await listTwenty<{ id: string }>("taskTargets", { limit: 1, filter: `targetAgencyCallId[eq]:"${call.id}"` });
-  if (existing.length) return 0;
-
+  const existing = await listCallTasks(call.id);
+  const titleKey = (title: string) => title.trim().toLowerCase().replace(/\s+/g, " ");
+  const byTitle = new Map<string, { id: string }>(existing.map((task) => [titleKey(task.title), task]));
   let created = 0;
   for (const t of tasks) {
+    const key = titleKey(t.title);
+    const previous = byTitle.get(key);
+    const taskId = previous?.id ?? uuidv5(`call-follow-up:${call.id}:${key}`, uuidv5.URL);
     const body: Record<string, unknown> = { title: t.title, status: "TODO", bodyV2: { markdown: `${t.description}\n\n_Created from call analysis._`.trim() } };
     if (t.dueAt) body.dueAt = t.dueAt;
     if (call.createdByMemberId) body.assigneeId = call.createdByMemberId;
-    const task = await createTwenty<{ id: string }>("tasks", body);
-    try {
-      const links: Record<string, string>[] = [{ targetAgencyCallId: call.id }];
-      if (call.agencyProspectId) links.push({ targetAgencyProspectId: call.agencyProspectId });
-      if (call.agencyLeadId) links.push({ targetAgencyLeadId: call.agencyLeadId });
-      for (const link of links) await createTwenty("taskTargets", { taskId: task.id, ...link });
-      created++;
-    } catch (err) {
-      log.error(`Could not link task ${task.id} to call ${call.id}:`, err instanceof Error ? err.message : String(err));
-      await deleteTwenty("tasks", task.id).catch(() => undefined);
+    const task = previous ?? await ensureRecord("tasks", taskId, body);
+    const links: Record<string, string>[] = [{ targetAgencyCallId: call.id }];
+    if (call.agencyProspectId) links.push({ targetAgencyProspectId: call.agencyProspectId });
+    if (call.agencyLeadId) links.push({ targetAgencyLeadId: call.agencyLeadId });
+    for (const link of links) {
+      const [field, targetId] = Object.entries(link)[0];
+      const [linked] = await listTwenty<{ id: string }>("taskTargets", {
+        limit: 1, filter: `and(taskId[eq]:"${task.id}",${field}[eq]:"${targetId}")`,
+      });
+      if (!linked) await ensureRecord("taskTargets", uuidv5(`${task.id}:${field}:${targetId}`, uuidv5.URL), { taskId: task.id, ...link });
     }
+    if (!previous) created++;
+    byTitle.set(key, { id: task.id });
   }
   log.info(`Created ${created} follow-up task(s) for call=${call.id}`);
   return created;
+}
+
+export async function syncFollowUpTasks(call: CallRef, tasks: FollowUpTask[]): Promise<CallTaskSync> {
+  try {
+    return { created: await createFollowUpTasks(call, tasks), error: null };
+  } catch (err) {
+    log.error(`Follow-up tasks failed for call=${call.id}:`, err instanceof Error ? err.message : String(err));
+    return { created: null, error: "The AI review was saved, but follow-up tasks could not all be saved in Twenty. Check the linked tasks and re-analyze to retry." };
+  }
 }

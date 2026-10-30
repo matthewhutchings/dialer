@@ -1,3 +1,5 @@
+import type { CallTask, CallTaskSync } from "@dialer/shared";
+
 const API_URL = import.meta.env.VITE_API_URL || "";
 
 export const AUTH_TOKEN_KEY = "cold-dialer-token";
@@ -435,7 +437,8 @@ export const api = {
     /** Fresh, short-lived Telnyx download link for a call's recording. */
     audioUrl: (id: string) => request<{ url: string }>(`/api/calls/${id}/audio?format=json`),
     analyze: (id: string) =>
-      request<{ ok: boolean; analysis: any; call: any }>(`/api/calls/${id}/analyze`, { method: "POST" }),
+      request<{ ok: boolean; analysis: any; call: any; taskSync: CallTaskSync }>(`/api/calls/${id}/analyze`, { method: "POST" }),
+    tasks: (id: string) => request<CallTask[]>(`/api/calls/${id}/tasks`),
   },
 
   twentyMeta: {

@@ -175,6 +175,14 @@ The browser holds the SIP call itself.
    popup does not end the call. With phone audio, use your phone for mute,
    hold and keypad digits. **Stop auto-next** pauses the list without ending
    the current call. On smaller screens the call workspace appears first.
+   Call review shows **Follow-up tasks** on Overview, AI Review and Activity.
+   Analysis creates native Twenty tasks for explicitly agreed follow-ups,
+   assigned to the call owner and linked to the call and its contact. Open
+   a task in Twenty to manage it. Use **Re-analyze & sync tasks** to backfill
+   older calls or retry failed task writes; matching tasks are reused and
+   existing task edits and completion status are preserved. No task is
+   created when the transcript contains no agreed follow-up. Task-write
+   failures are reported separately from a successfully saved AI review.
 4. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
    another member holds it you get a 409 naming them, and the dial aborts
    before any SIP traffic.

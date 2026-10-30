@@ -46,6 +46,7 @@ const SYSTEM_PROMPT = [
   '"tasks": [{"title": string (imperative, max 80 chars), "description": string (one sentence of context), "due": "YYYY-MM-DD" or null}] (max 5),',
   '"confidence": number 0-1}.',
   "Tasks are only follow-ups explicitly agreed or requested on the call (send info, call back, book a meeting, prepare a quote).",
+  "Include confirmed recipient names, email addresses and promised material in task descriptions. Never infer missing contact details.",
   "Set due only when a day or date was stated or clearly implied, resolved against today's date. Never invent tasks: return [] when nothing was agreed.",
   "Sentiment reflects the PROSPECT, not the agent. Score <40 = bad, 40-69 = neutral, 70+ = good.",
 ].join(" ");

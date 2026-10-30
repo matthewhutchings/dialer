@@ -4,7 +4,7 @@ import { listTwentyAll, createTwenty, updateTwenty, getTwenty } from "../../lib/
 import { resolveActor } from "../../lib/twenty/actor/index.js";
 import { telnyxClient, telnyxErrorMessage } from "../../lib/telnyx/index.js";
 import { analyzeCallTranscript, isAiConfigured } from "../../lib/ai/analysis/index.js";
-import { createFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
+import { listCallTasks, syncFollowUpTasks } from "../../lib/ai/analysis/followUpTasks.js";
 import { createLogger } from "../../lib/logger/index.js";
 import type { AgencyCall } from "./types.js";
 import { mapCall, sortNewestFirst, splitStatus } from "./helpers/index.js";
@@ -36,6 +36,16 @@ router.get("/:id", async (req, res) => {
     res.json(mapCall(call));
   } catch (err: any) {
     res.status(404).json({ error: "Call not found" });
+  }
+});
+
+router.get("/:id/tasks", async (req, res) => {
+  try {
+    await getTwenty<AgencyCall>("agencyCalls", req.params.id as string);
+    res.json(await listCallTasks(req.params.id as string));
+  } catch (err) {
+    log.error("Failed to load call tasks:", err instanceof Error ? err.message : String(err));
+    res.status(502).json({ error: "Could not load follow-up tasks from Twenty. Please try again." });
   }
 });
 
@@ -355,8 +365,8 @@ router.post("/:id/analyze", async (req, res) => {
     };
     const updated = await updateTwenty<AgencyCall>('agencyCalls', call.id, patch, await resolveActor(req));
     log.info(`AI analysis stored: call=${call.id} sentiment=${analysis.sentiment} score=${analysis.score}`);
-    await createFollowUpTasks(call, analysis.tasks).catch((err: any) => log.error(`Follow-up tasks failed for call=${call.id}: ${err.message}`));
-    res.json({ ok: true, analysis, call: mapCall(updated) });
+    const taskSync = await syncFollowUpTasks(call, analysis.tasks);
+    res.json({ ok: !taskSync.error, analysis, call: mapCall(updated), taskSync });
   } catch (err: any) {
     log.error("Failed to analyze call:", err.message);
     res.status(500).json({ error: "Failed to analyze call", details: err.message });

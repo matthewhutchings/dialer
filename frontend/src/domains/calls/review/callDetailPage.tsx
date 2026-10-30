@@ -33,6 +33,9 @@ import { useReportSettings } from "@/domains/reports/data";
 import { callStatusLabel } from "@/domains/calls/disposition";
 import { formatMinutes } from "@/domains/reports/data";
 import { resolveActivities, timeAgo, useDialerRecords, useRecordActivity } from "@/domains/admin/data";
+import { twentyLinks, useTwentyBaseUrl } from "@/domains/twenty/links";
+import { Button } from "@/domains/ui/button";
+import { Markdown } from "@/domains/ui/markdown";
 
 type Tab = "overview" | "recording" | "ai" | "activity" | "technical";
 const TABS: { key: Tab; label: string; icon: IconComponent }[] = [
@@ -89,12 +92,19 @@ export function CallDetailPage() {
     queryClient.invalidateQueries({ queryKey: ["call", callId] });
     queryClient.invalidateQueries({ queryKey: ["calls"] });
     queryClient.invalidateQueries({ queryKey: ["record-activity"] });
+    queryClient.invalidateQueries({ queryKey: ["call-tasks", callId] });
   };
   const analyze = useMutation({
     mutationFn: () => api.calls.analyze(callId ?? ""),
-    onSuccess: () => {
+    onSuccess: (result) => {
       refresh();
-      success("Analysis complete", "The AI review is ready.");
+      if (result.taskSync.error) {
+        toastWarning("Review saved; task sync incomplete", result.taskSync.error);
+      } else {
+        success("Analysis complete", result.analysis.tasks?.length
+          ? `${result.taskSync.created ?? 0} new follow-up task(s) linked in Twenty.`
+          : "The AI review is ready. No explicitly agreed follow-up tasks were found.");
+      }
     },
     onError: (err) => toastError("Analysis not run", describeError(err).detail),
   });
@@ -347,6 +357,17 @@ export function CallDetailPage() {
           </div>
         )}
 
+        {(tab === "overview" || tab === "ai" || tab === "activity") && (
+          <FollowUpTasks
+            callId={call.id}
+            hasTranscript={!!call.transcript}
+            analyzed={!!call.aiAnalyzedAt}
+            syncError={analyze.data?.call?.id === call.id ? analyze.data?.taskSync.error : null}
+            analyzing={analyze.isPending}
+            onAnalyze={() => analyze.mutate()}
+          />
+        )}
+
         {tab === "activity" && (
           <ReportCard
             title="Call & Contact History"
@@ -390,6 +411,58 @@ export function CallDetailPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function FollowUpTasks({ callId, hasTranscript, analyzed, syncError, analyzing, onAnalyze }: {
+  callId: string;
+  hasTranscript: boolean;
+  analyzed: boolean;
+  syncError?: string | null;
+  analyzing: boolean;
+  onAnalyze: () => void;
+}) {
+  const baseUrl = useTwentyBaseUrl();
+  const tasks = useQuery({
+    queryKey: ["call-tasks", callId],
+    queryFn: () => api.calls.tasks(callId),
+    staleTime: 30_000,
+  });
+  return (
+    <section aria-label="Follow-up tasks">
+      <ReportCard
+        title="Follow-up tasks"
+        unit={tasks.data ? `${tasks.data.length} linked in Twenty` : undefined}
+        tip={{ title: "Follow-up tasks", icon: Calendar, what: "Native Twenty tasks linked to this call. AI creates tasks only for follow-ups explicitly agreed in the transcript.", use: "Open a task in Twenty to manage its status, owner and due date." }}
+        aside={hasTranscript ? <Button size="sm" disabled={analyzing} onClick={onAnalyze}>{analyzing ? "Analyzing…" : analyzed ? "Re-analyze & sync tasks" : "Analyze & create tasks"}</Button> : undefined}
+      >
+        {syncError && <p role="alert" className="mb-3 text-[13px] text-amber-700">{syncError}</p>}
+        {tasks.isLoading ? <Skeleton className="h-16 w-full" /> : tasks.error ? (
+          <div role="alert" className="space-y-2 text-[13px] text-red-600">
+            <p>Follow-up tasks could not be loaded: {describeError(tasks.error).detail}</p>
+            <Button size="sm" onClick={() => void tasks.refetch()}>Retry tasks</Button>
+          </div>
+        ) : tasks.data?.length ? (
+          <ul className="divide-y divide-[var(--ods-border)]">
+            {tasks.data.map((task) => (
+              <li key={task.id} className="space-y-2 py-3 first:pt-0 last:pb-0">
+                <a href={twentyLinks.record(baseUrl, "task", task.id)} target="_blank" rel="noreferrer" className="text-[14px] font-semibold text-[var(--ods-brand-600)] hover:underline">{task.title}</a>
+                <p className="text-[12px] text-[var(--ods-text-secondary)]">
+                  {task.status === "TODO" ? "To do" : task.status.replace(/_/g, " ")}
+                  {" · "}{task.dueAt ? `Due ${when(task.dueAt)}` : "No due date"}
+                  {" · "}{task.assigneeId ? "Assigned in Twenty" : "Unassigned"}
+                </p>
+                {task.description && <Markdown className="text-[13px] text-[var(--ods-text-secondary)]">{task.description}</Markdown>}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState>{hasTranscript
+            ? "No tasks are linked to this call. Analyze or re-analyze to create follow-ups explicitly agreed in the transcript."
+            : "Follow-up tasks can be generated once the call transcript is ready."}</EmptyState>
+        )}
+      </ReportCard>
+    </section>
   );
 }
 
