@@ -169,6 +169,12 @@ The browser holds the SIP call itself.
    opener, linked script and notes stay on screen. Choose a disposition to save
    the call and automatically dial the next company. Previous, Next, Skip and
    Remove from dialer let you work the list without deleting CRM records.
+   Mute, Hold, Keypad and End call are available directly in the call workspace.
+   The same controls are available in the floating popup, which opens when
+   calling; use **Open call popup** to reopen it after closing it. Closing the
+   popup does not end the call. With phone audio, use your phone for mute,
+   hold and keypad digits. **Stop auto-next** pauses the list without ending
+   the current call. On smaller screens the call workspace appears first.
 4. **Claim a number.** `POST /phones/:id/claim` moves it `IDLE` to `DIALING`. If
    another member holds it you get a 409 naming them, and the dial aborts
    before any SIP traffic.

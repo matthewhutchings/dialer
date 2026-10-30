@@ -23,7 +23,7 @@ test("inbound availability, caller details, navigation and late CRM association"
   t.after(() => process.chdir(cwd));
   const server = await createServer({
     root: fileURLToPath(new URL("../", import.meta.url)),
-    server: { host: "127.0.0.1", port: 0 },
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
     define: {
       "import.meta.env.VITE_API_URL": JSON.stringify(""),
       "import.meta.env.VITE_SIP_URI": JSON.stringify("sip:test@example.invalid"),
@@ -101,6 +101,7 @@ test("inbound availability, caller details, navigation and late CRM association"
     if (path === "/api/prospects/facets") body = {
       total: 0, type: { prospect: 0, lead: 0 }, status: {}, country: {}, industry: {}, campaign: {}, creator: 0,
     };
+    if (path === "/api/prospects/ids") body = { ids: [], truncated: false };
     await route.fulfill({ json: body });
   });
   const invite = (number = "+447700900123") => page.evaluate((number) => {
@@ -176,5 +177,12 @@ test("inbound availability, caller details, navigation and late CRM association"
   const dockToggle = page.locator("[data-dialer-toggle]");
   if (await dockToggle.getAttribute("aria-pressed") !== "true") await dockToggle.click();
   assert(await page.getByText("Inbound · Connected", { exact: true }).isVisible(), await page.locator("body").innerText());
+  await page.getByRole("link", { name: "Dialer", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "Call workspace" });
+  await workspace.getByText("Connected", { exact: true }).waitFor();
+  assert(await workspace.getByRole("button", { name: "End call", exact: true }).isVisible());
+  await workspace.getByRole("button", { name: "End call", exact: true }).click();
+  await workspace.getByText("Call ended", { exact: true }).waitFor();
+  assert(await workspace.getByRole("button", { name: "No Answer", exact: true }).isVisible());
   assert.deepEqual(errors, []);
 });

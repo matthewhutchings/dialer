@@ -11,11 +11,12 @@ import { LinkedNotes } from "@/domains/contact/notes";
 import { contactsApi, contactName, type ContactQuery, type ContactRow } from "@/domains/contact/list";
 import { CallScriptViewer } from "@/domains/scripts/viewer";
 import { DISPOSITIONS } from "@/domains/calls/disposition";
-import { formatDuration } from "@/domains/dialer/dock";
+import { CallControls, formatDuration, STATE_LABEL } from "@/domains/dialer/dock";
 import { isLive, useDialer } from "@/domains/dialer/provider";
 import {
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   Globe,
   MapPin,
   Phone,
@@ -219,11 +220,15 @@ export function DialerPage() {
           <Button size="sm" variant="ghost" icon={RefreshCw} disabled={candidates.isFetching || running || active} onClick={retryCandidates}>
             Refresh
           </Button>
+          <Button size="sm" variant="secondary" icon={ExternalLink} onClick={dialer.open}>
+            Open call popup
+          </Button>
+          {running && <Button size="sm" variant="secondary" onClick={stop}>Stop auto-next</Button>}
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[260px_minmax(320px,1fr)_minmax(320px,0.95fr)]">
-        <aside className="flex min-h-0 flex-col border-b border-[var(--ods-border)] xl:border-b-0 xl:border-r">
+      <main className="grid min-h-0 flex-1 grid-cols-1 auto-rows-max overflow-y-auto xl:auto-rows-fr xl:overflow-hidden xl:grid-cols-[260px_minmax(320px,1fr)_minmax(320px,0.95fr)]">
+        <aside className="flex max-h-72 min-h-0 flex-col border-b border-[var(--ods-border)] xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="flex items-center justify-between gap-2 border-b border-[var(--ods-border)] px-4 py-3">
             <div>
               <h2 className="text-[14px] font-semibold">Companies</h2>
@@ -252,7 +257,7 @@ export function DialerPage() {
                 const selected = company.id === current?.id;
                 return (
                   <div key={company.id} className={`group flex items-center gap-2 border-b border-[var(--ods-border)] px-3 py-2 ${selected ? "bg-[var(--ods-active)]" : "hover:bg-[var(--ods-hover)]"}`}>
-                    <button className="min-w-0 flex-1 text-left" onClick={() => moveTo(index)} disabled={active}>
+                    <button className="min-w-0 flex-1 text-left" aria-current={selected ? "step" : undefined} onClick={() => moveTo(index)} disabled={active}>
                       <span className="block truncate text-[13px] font-medium">{contactName(company) ?? "Unknown company"}</span>
                       <span className="block truncate text-[11px] text-[var(--ods-text-tertiary)]">{company.phone} · {company.niche ?? company.source ?? "Company"}</span>
                     </button>
@@ -262,7 +267,7 @@ export function DialerPage() {
                       disabled={active && dialer.target?.contactId === company.id}
                       aria-label={`Remove ${contactName(company) ?? "company"} from dialer`}
                       title="Remove from dialer list"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ods-text-tertiary)] opacity-0 hover:bg-[var(--ods-hover)] hover:text-red-600 group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ods-text-tertiary)] xl:opacity-0 hover:bg-[var(--ods-hover)] hover:text-red-600 group-hover:opacity-100 focus:opacity-100 disabled:opacity-40"
                     >
                       <X className="h-3.5 w-3.5" />
                     </button>
@@ -279,7 +284,7 @@ export function DialerPage() {
           )}
         </aside>
 
-        <section className="min-h-0 overflow-y-auto border-b border-[var(--ods-border)] p-4 xl:border-b-0 xl:border-r">
+        <section className="min-h-0 border-b border-[var(--ods-border)] p-4 xl:overflow-y-auto xl:border-b-0 xl:border-r">
           {current ? (
             <div className="mx-auto max-w-3xl space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -369,7 +374,7 @@ export function DialerPage() {
           )}
         </section>
 
-        <section className="min-h-0 overflow-y-auto p-4">
+        <section aria-label="Call workspace" className="-order-1 min-h-0 p-4 xl:order-none xl:overflow-y-auto">
           <div className="mx-auto flex max-w-2xl flex-col gap-4">
             {dialer.incoming && (
               <Card className="border-emerald-500/30 bg-emerald-500/5" padding="sm">
@@ -389,26 +394,25 @@ export function DialerPage() {
                 </div>
               </Card>
             )}
-            {current && (
+            {(current || dialer.state !== "idle") && (
               <>
                 <Card padding="sm">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="text-[12px] text-[var(--ods-text-tertiary)]">
-                        {dialer.state === "idle" ? "Ready to call" : dialer.state === "ended" ? "Call ended" : "Call in progress"}
+                      <p role="status" className="text-[12px] text-[var(--ods-text-tertiary)]">
+                        {dialer.state === "idle" ? "Ready to call" : STATE_LABEL[dialer.state]}
                       </p>
-                      <h2 className="truncate text-lg font-semibold">{dialer.target?.name ?? contactName(current)}</h2>
-                      <p className="text-[13px] tabular-nums text-[var(--ods-text-secondary)]">{dialer.target?.phone ?? current.phone}</p>
+                      <h2 className="truncate text-lg font-semibold">{dialer.target?.name ?? (current ? contactName(current) : "Current call")}</h2>
+                      <p className="text-[13px] tabular-nums text-[var(--ods-text-secondary)]">{dialer.target?.phone ?? current?.phone}</p>
                     </div>
                     <Chip icon={Phone}><span className="tabular-nums">{formatDuration(dialer.duration)}</span></Chip>
                   </div>
                   {dialer.failure && <p role="alert" className="mt-3 rounded-[8px] bg-red-500/10 p-2 text-[12px] text-red-700"><b>{dialer.failure.title}.</b> {dialer.failure.detail}</p>}
                   {dialer.recWarning && <p role="status" className="mt-3 rounded-[8px] bg-amber-500/10 p-2 text-[12px] text-amber-700">{dialer.recWarning}</p>}
                   {active ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <Button variant={dialer.muted ? "primary" : "secondary"} onClick={dialer.mute}>{dialer.muted ? "Unmute" : "Mute"}</Button>
-                      <Button variant={dialer.held ? "primary" : "secondary"} onClick={dialer.hold}>{dialer.held ? "Resume" : "Hold"}</Button>
-                      <Button variant="danger" icon={PhoneOff} onClick={dialer.hangup}>End call</Button>
+                    <div className="mt-4 space-y-3">
+                      <CallControls />
+                      <Button block variant="danger" icon={PhoneOff} onClick={dialer.hangup}>End call</Button>
                     </div>
                   ) : dialer.state === "ended" ? (
                     <>
@@ -418,7 +422,7 @@ export function DialerPage() {
                           <Button
                             key={disposition.value}
                             variant={disposition.type === "positive" ? "secondary" : "ghost"}
-                            disabled={savingDisposition}
+                            disabled={savingDisposition || dialer.saving}
                             onClick={() => void saveDisposition(disposition.value)}
                             className="h-auto min-h-10 justify-start whitespace-normal text-left"
                           >
@@ -429,10 +433,9 @@ export function DialerPage() {
                     </>
                   ) : (
                     <div className="mt-4 flex flex-wrap gap-2">
-                      <Button variant="primary" icon={Phone} disabled={!current.phone} onClick={start}>
+                      <Button variant="primary" icon={Phone} disabled={!current?.phone || !!dialer.incoming} onClick={start}>
                         {running ? "Call this company" : "Start calling"}
                       </Button>
-                      {running && <Button variant="ghost" onClick={stop}>Stop auto-next</Button>}
                       {running && currentIndex < queue.length - 1 && (
                         <Button variant="secondary" icon={SkipForward} onClick={() => moveTo(currentIndex + 1)}>Skip company</Button>
                       )}
@@ -442,13 +445,13 @@ export function DialerPage() {
                   {dialer.notesError && <p role="alert" className="mt-2 text-[12px] text-red-600">Call notes could not be saved: {dialer.notesError} <button className="underline" onClick={dialer.retryNotes}>Retry</button></p>}
                 </Card>
 
-                <Card className="min-h-[320px]" padding="sm">
+                {current && <Card className="min-h-[320px]" padding="sm">
                   <div className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--ods-border)] pb-2">
                     <h2 className="text-[14px] font-semibold">Call script</h2>
                     {current.campaign_id && <Chip>Campaign linked</Chip>}
                   </div>
                   {scriptPanel}
-                </Card>
+                </Card>}
 
                 {dialer.state !== "idle" && (
                   <Card title="Call notes" padding="sm">

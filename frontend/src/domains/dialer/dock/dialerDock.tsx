@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button } from "@/domains/ui/button";
 import { buttonClass } from "@/domains/ui/button";
 import { inputClass } from "@/domains/ui/input";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Backspace,
@@ -15,8 +15,6 @@ import {
   Globe,
   Keyboard,
   ListFilter,
-  Mic,
-  MicOff,
   Music,
   Pause,
   Phone,
@@ -60,6 +58,7 @@ import { useAuth } from "@/domains/auth/provider";
 import { useToast } from "@/domains/ui/toast";
 import { describeError } from "@/domains/feedback/describeError";
 import { useAccountFilters } from "./useAccountFilters";
+import { CallControls, ControlButton, Keypad } from "./callControls";
 
 // Buttons and inputs come from the design primitives (docs/design-system.md).
 const BTN_PRIMARY = buttonClass({ variant: "primary" });
@@ -72,7 +71,7 @@ export function formatDuration(s: number): string {
   return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-const STATE_LABEL: Record<CallState, string> = {
+export const STATE_LABEL: Record<CallState, string> = {
   idle: "Ready",
   connecting: "Calling",
   ringing: "Ringing",
@@ -172,7 +171,6 @@ function useContactSide() {
 
 export function DialerDock() {
   const dialer = useDialer();
-  const location = useLocation();
   const { isOpen, close, open, pinned, setPinned, state, duration } = dialer;
   const ref = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -243,8 +241,6 @@ export function DialerDock() {
     if (!targetType || !targetId) return;
     setSide((s) => (s?.kind === "contact" && s.contactId !== targetId ? { kind: "contact", contactType: targetType, contactId: targetId } : s));
   }, [targetType, targetId]);
-
-  if (location.pathname === "/dialer") return null;
 
   if (!isOpen) {
     if (!isLive(state)) return null;
@@ -981,30 +977,6 @@ function ContactsTab() {
   );
 }
 
-const KEYS: Array<[string, string]> = [
-  ["1", ""], ["2", "ABC"], ["3", "DEF"],
-  ["4", "GHI"], ["5", "JKL"], ["6", "MNO"],
-  ["7", "PQRS"], ["8", "TUV"], ["9", "WXYZ"],
-  ["*", ""], ["0", "+"], ["#", ""],
-];
-
-function Keypad({ onKey }: { onKey: (k: string) => void }) {
-  return (
-    <div className="grid grid-cols-3 gap-2">
-      {KEYS.map(([k, sub]) => (
-        <button
-          key={k}
-          onClick={() => onKey(k)}
-          className="h-12 rounded-md bg-[var(--ods-bg-tertiary)] hover:bg-[var(--ods-hover)] active:bg-[var(--ods-active)] flex flex-col items-center justify-center"
-        >
-          <span className="text-xl font-semibold leading-none">{k}</span>
-          {sub && <span className="text-[12px] font-semibold tracking-wider text-[var(--ods-text-tertiary)] mt-0.5">{sub}</span>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /** Contacts added from the Contacts page, called top to bottom with auto-queue. */
 function QueueTab() {
   const ids = useDialQueue();
@@ -1149,43 +1121,11 @@ function CallHeader() {
   );
 }
 
-function ControlButton({
-  icon: Icon,
-  label,
-  active,
-  disabled,
-  title,
-  onClick,
-}: {
-  icon: IconComponent;
-  label: string;
-  active?: boolean;
-  disabled?: boolean;
-  title?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title ?? label}
-      aria-pressed={active}
-      className={`h-16 rounded-md flex flex-col items-center justify-center gap-1 text-[12px] font-semibold transition disabled:opacity-40 ${
-        active ? "bg-[var(--ods-brand-600)] text-white" : "bg-[var(--ods-bg-tertiary)] hover:bg-[var(--ods-hover)] text-[var(--ods-text-primary)]"
-      }`}
-    >
-      <Icon className="w-4 h-4" />
-      {label}
-    </button>
-  );
-}
-
 function InCallView({ scriptOpen, onToggleScript }: { scriptOpen: boolean; onToggleScript: () => void }) {
   const d = useDialer();
   const contactSide = useContactSide();
   const who = d.target?.contactType && d.target.contactId ? { type: d.target.contactType, id: d.target.contactId } : null;
-  const [panel, setPanel] = useState<"none" | "keypad" | "notes">("none");
-  const connected = d.state === "active" || d.state === "on_hold";
+  const [notesOpen, setNotesOpen] = useState(false);
   if (d.legs.length > 1 && !d.legs.some((l) => l.status === "answered")) return <LinesView />;
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
@@ -1193,41 +1133,21 @@ function InCallView({ scriptOpen, onToggleScript }: { scriptOpen: boolean; onTog
       {d.recWarning && (
         <p className="mx-4 mb-2 p-2 rounded-[8px] bg-amber-500/10 text-[12px] text-amber-700">{d.recWarning}. Audio works, but this call will not be recorded.</p>
       )}
-      <div className="px-4 grid grid-cols-3 gap-2">
-        <ControlButton
-          icon={d.muted ? MicOff : Mic}
-          label={d.muted ? "Unmute" : "Mute"}
-          active={d.muted}
-          disabled={d.phoneAudio || !connected}
-          title={d.phoneAudio ? "Mute on your phone (phone audio)" : undefined}
-          onClick={d.mute}
-        />
-        <ControlButton
-          icon={d.held ? Play : Pause}
-          label={d.held ? "Resume" : "Hold"}
-          active={d.held}
-          disabled={d.phoneAudio || !connected}
-          title={d.phoneAudio ? "Hold on your phone (phone audio)" : undefined}
-          onClick={d.hold}
-        />
-        <ControlButton icon={Keyboard} label="Keypad" active={panel === "keypad"} disabled={d.phoneAudio} onClick={() => setPanel((p) => (p === "keypad" ? "none" : "keypad"))} />
-        <ControlButton icon={FileText} label="Notes" active={panel === "notes"} onClick={() => setPanel((p) => (p === "notes" ? "none" : "notes"))} />
-        <ControlButton icon={BookOpen} label="Script" active={scriptOpen} title="Show the call script" onClick={onToggleScript} />
-        <ControlButton
-          icon={User}
-          label="Contact"
-          active={contactSide.isShown(who?.id)}
-          disabled={!who}
-          title={who ? "Show the business you are calling" : "This number is not a saved contact"}
-          onClick={() => who && contactSide.toggle(who.type, who.id)}
-        />
+      <div className="px-4">
+        <CallControls>
+          <ControlButton icon={FileText} label="Notes" active={notesOpen} onClick={() => setNotesOpen((open) => !open)} />
+          <ControlButton icon={BookOpen} label="Script" active={scriptOpen} title="Show the call script" onClick={onToggleScript} />
+          <ControlButton
+            icon={User}
+            label="Contact"
+            active={contactSide.isShown(who?.id)}
+            disabled={!who}
+            title={who ? "Show the business you are calling" : "This number is not a saved contact"}
+            onClick={() => who && contactSide.toggle(who.type, who.id)}
+          />
+        </CallControls>
       </div>
-      {panel === "keypad" && (
-        <div className="px-4 pt-3">
-          <Keypad onKey={d.sendDtmf} />
-        </div>
-      )}
-      {panel === "notes" && (
+      {notesOpen && (
         <div className="px-4 pt-3">
           <NotesField />
         </div>
